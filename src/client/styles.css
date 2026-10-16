@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Barlow Condensed", "Arial Narrow", ui-sans-serif, sans-serif;
+
+  --color-pitch-50: #effaf2;
+  --color-pitch-100: #d8f2df;
+  --color-pitch-200: #b2e4c1;
+  --color-pitch-300: #7fcf9a;
+  --color-pitch-500: #2f9a57;
+  --color-pitch-600: #1f7d43;
+  --color-pitch-700: #186437;
+  --color-pitch-800: #134e2c;
+  --color-pitch-900: #0f3d24;
+  --color-pitch-950: #082414;
+
+  --color-chalk: #f5f6f2;
+  --color-ink: #121a15;
+  --color-muted: #55625a;
+  --color-line: #dde3dc;
+  --color-gold: #b7860b;
+  --color-gold-soft: #fbf1d3;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  background: var(--color-chalk);
+}
+body {
+  @apply bg-chalk text-ink font-sans antialiased;
+  min-height: 100dvh;
+}
+.display {
+  font-family: var(--font-display);
+  letter-spacing: 0.01em;
+}
+.num {
+  font-variant-numeric: tabular-nums;
+}
+:focus-visible {
+  outline: 3px solid var(--color-pitch-500);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["./src/worker/worker-configuration.d.ts", "@cloudflare/vitest-plugin/types", "node"]
+  },
+  "include": ["test", "src/worker", "src/shared", "vitest.config.ts", "vite.config.ts"]
+}
