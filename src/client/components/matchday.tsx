@@ -4,14 +4,19 @@ import { formatInstant, REG_LABEL, relativeDeadline } from "../format";
 import { useDayMutation } from "../hooks";
 import type { Match, MatchDayDetail, TeamSet } from "../types";
 import type { StandingRow } from "../../shared/rules";
-import { Badge, Button, Card, cx, GuestBadge, SetChip } from "./ui";
+import { useQuery } from "@tanstack/react-query";
+import { formatMoney } from "../../shared/rules";
+import { useCheckout } from "./account";
+import type { Player } from "../types";
+import { Avatar, Badge, Button, Card, CardIcon, cx, GuestBadge, SetChip } from "./ui";
 
 export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
   const { day, me, counts } = detail;
   const checkIn = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/checkin`), (d) =>
-    d.me?.registrationStatus === "waitlist" ? "Day is full — you're on the waiting list" : d.me?.registrationStatus === "pending" ? "Request sent for approval" : "You're in! See you on the pitch",
+    d.me?.registrationStatus === "waitlist" ? "Day is full — you're on the waiting list" : d.me?.registrationStatus === "pending" ? "Almost there — pay the guest fee to confirm your place" : "You're in! See you on the pitch",
   );
-  const withdraw = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/withdraw`), "You've withdrawn");
+  const payFee = useCheckout(`/matchdays/${day.id}/guest-fee/checkout`, "Guest fee paid");
+  const unavailable = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/unavailable`), "Got it — marked as not available");
   const status = me?.registrationStatus;
   const active = status === "confirmed" || status === "waitlist" || status === "pending";
   const spots = Math.max(0, day.capacity - counts.confirmed);
@@ -26,6 +31,8 @@ export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
       </div>
       {!me ? (
         <p className="text-sm text-muted">Your login isn't linked to a player profile yet — ask an admin.</p>
+      ) : !me.approved ? (
+        <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Your account is waiting for admin approval. You can mark availability once approved.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
           {status && (
@@ -36,12 +43,19 @@ export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
           )}
           {me.canCheckIn && !active && (
             <Button size="lg" className="flex-1 sm:flex-none" loading={checkIn.isPending} onClick={() => checkIn.mutate(undefined)}>
-              {spots > 0 ? "Check in" : "Join waiting list"}
+              {spots > 0 ? "✓ I'm available" : "Join waiting list"}
+              {me.kind === "guest" && me.guestFee != null && (me.guestFee > 0 ? ` · ${formatMoney(me.guestFee, "NGN")}` : " · free")}
             </Button>
           )}
-          {me.canCheckIn && active && (
-            <Button variant="secondary" loading={withdraw.isPending} onClick={() => withdraw.mutate(undefined)}>
-              Withdraw
+          {me.feeStatus === "unpaid" && (
+            <Button size="lg" variant="gold" className="flex-1 sm:flex-none" loading={payFee.isPending} onClick={() => payFee.mutate({})}>
+              Pay {formatMoney(me.feeAmount, "NGN")} {status === "pending" ? "to confirm" : "guest fee"}
+            </Button>
+          )}
+          {me.feeStatus === "free" && <Badge tone="green">Free — you've paid 5 days this season</Badge>}
+          {me.canCheckIn && status !== "unavailable" && (
+            <Button size={active ? "md" : "lg"} variant="secondary" className={active ? "" : "flex-1 sm:flex-none"} loading={unavailable.isPending} onClick={() => unavailable.mutate(undefined)}>
+              {active ? "I can't make it any more" : "✗ Can't make it"}
             </Button>
           )}
           {!me.canCheckIn && day.status === "checkin_open" && <span className="text-sm text-muted">The check-in deadline has passed.</span>}
@@ -51,13 +65,14 @@ export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
   );
 }
 
-export function TeamCard({ set, highlightPlayerId, showAttendance }: { set: TeamSet; highlightPlayerId?: string; showAttendance?: boolean }) {
+export function TeamCard({ set, highlightPlayerId, showAttendance, avatars }: { set: TeamSet; highlightPlayerId?: string; showAttendance?: boolean; avatars?: Record<string, string | null> }) {
   const starters = set.players.filter((p) => p.role === "starter");
   const subs = set.players.filter((p) => p.role === "sub");
   return (
-    <Card className={cx("overflow-hidden", set.isDailyWinner && "ring-2 ring-gold")}>
-      <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-3" style={{ borderTop: `5px solid ${set.color}` }}>
-        <h3 className="display text-xl font-bold uppercase">{set.name}</h3>
+    <Card className={cx("overflow-hidden", set.isDailyWinner && "border-pitch-700")}>
+      <div className="flex items-center gap-3 border-b border-line px-5 py-4">
+        <span className="h-7 w-1.5 shrink-0 rounded-full" style={{ background: set.color === "#f8fafc" ? "#d6d6d0" : set.color }} aria-hidden />
+        <h3 className="mr-auto text-xl font-medium tracking-[-0.02em]">{set.name}</h3>
         <div className="flex items-center gap-2">
           {set.record && set.record.played > 0 && (
             <span className="num text-xs font-semibold text-muted">
@@ -70,6 +85,7 @@ export function TeamCard({ set, highlightPlayerId, showAttendance }: { set: Team
       <ul className="divide-y divide-line">
         {[...starters, ...subs].map((p) => (
           <li key={p.playerId} className={cx("flex min-h-11 items-center gap-2 px-4 py-2 text-[15px]", p.playerId === highlightPlayerId && "bg-pitch-50 font-semibold")}>
+            <Avatar name={p.displayName} url={avatars?.[p.playerId]} size={26} />
             <Link to={`/players/${p.playerId}`} className="truncate hover:underline">
               {p.displayName}
             </Link>
@@ -88,10 +104,12 @@ export function TeamCard({ set, highlightPlayerId, showAttendance }: { set: Team
 }
 
 export function TeamsGrid({ detail, showAttendance }: { detail: MatchDayDetail; showAttendance?: boolean }) {
+  const players = useQuery({ queryKey: ["players"], queryFn: () => api.get<{ players: Player[] }>("/players"), staleTime: 60_000 });
+  const avatars = Object.fromEntries((players.data?.players ?? []).map((p) => [p.id, p.avatarUrl]));
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {detail.sets.map((s) => (
-        <TeamCard key={s.id} set={s} highlightPlayerId={detail.me?.playerId} showAttendance={showAttendance} />
+        <TeamCard key={s.id} set={s} highlightPlayerId={detail.me?.playerId} showAttendance={showAttendance} avatars={avatars} />
       ))}
     </div>
   );
@@ -104,11 +122,11 @@ export function SetTable({ detail }: { detail: MatchDayDetail }) {
     <Card className="overflow-x-auto">
       <table className="num w-full text-left text-sm">
         <caption className="sr-only">Set results for the day</caption>
-        <thead className="text-xs uppercase tracking-wide text-muted">
+        <thead className="text-xs text-muted">
           <tr className="border-b border-line">
-            <th className="px-4 py-2.5 font-semibold">Set</th>
+            <th className="px-4 py-3 font-normal">Set</th>
             {["P", "W", "D", "L", "GF", "GA"].map((h) => (
-              <th key={h} className="px-2 py-2.5 text-center font-semibold">
+              <th key={h} className="px-2 py-3 text-center font-normal">
                 {h}
               </th>
             ))}
@@ -116,12 +134,12 @@ export function SetTable({ detail }: { detail: MatchDayDetail }) {
         </thead>
         <tbody>
           {rows.map((s) => (
-            <tr key={s.id} className={cx("border-b border-line last:border-0", s.isDailyWinner && "bg-gold-soft/60")}>
+            <tr key={s.id} className={cx("border-b border-line last:border-0", s.isDailyWinner && "bg-pitch-50")}>
               <td className="px-4 py-3">
                 <SetChip name={s.name} color={s.color} /> {s.isDailyWinner && <span aria-label="daily winner">🏆</span>}
               </td>
               <td className="px-2 text-center">{s.record?.played ?? 0}</td>
-              <td className="px-2 text-center font-bold">{s.record?.wins ?? 0}</td>
+              <td className="px-2 text-center text-lg font-medium text-pitch-800">{s.record?.wins ?? 0}</td>
               <td className="px-2 text-center">{s.record?.draws ?? 0}</td>
               <td className="px-2 text-center">{s.record?.losses ?? 0}</td>
               <td className="px-2 text-center">{s.record?.goalsFor ?? 0}</td>
@@ -163,7 +181,7 @@ export function MatchesList({ detail }: { detail: MatchDayDetail }) {
               <div className="flex items-center gap-3">
                 <span className="w-6 text-xs font-semibold text-muted">#{m.seq}</span>
                 <SetChip name={home.name} color={home.color} className="flex-1 justify-end text-right" />
-                <span className={cx("num display min-w-[4.5rem] rounded-lg px-2 py-1 text-center text-2xl font-bold", m.status === "in_progress" ? "bg-sky-100 text-sky-900" : "bg-stone-100")}>
+                <span className={cx("num stat min-w-[5rem] rounded-full px-3 py-1.5 text-center text-3xl", m.status === "in_progress" ? "bg-pitch-50 text-pitch-800" : "bg-chalk")}>
                   {m.homeScore}–{m.awayScore}
                 </span>
                 <SetChip name={away.name} color={away.color} className="flex-1" />
@@ -202,14 +220,15 @@ export function WinnerBanner({ detail }: { detail: MatchDayDetail }) {
   if (w.status === "decided") {
     const names = w.winnerSetIds.map((id) => detail.sets.find((s) => s.id === id)?.name).join(" & ");
     return (
-      <div className="rounded-2xl bg-gradient-to-r from-[#7a5a05] to-gold px-5 py-4 text-white shadow">
-        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-white/80">{finalized ? "Daily winner" : "Leading (provisional)"}</div>
-        <div className="display text-3xl font-bold uppercase">
+      <div className="relative overflow-hidden rounded-[22px] border border-line bg-chalk px-5 py-5">
+        <span className="watermark" aria-hidden>Winner</span>
+        <div className="relative text-sm text-muted">{finalized ? "Daily winner" : "Leading (provisional)"}</div>
+        <div className="relative mt-1 text-[34px] font-light leading-tight tracking-[-0.04em] text-pitch-800">
           🏆 {names}
-          {w.method === "shared" && " — shared"}
-          {w.method === "playoff" && " — via playoff"}
+          {w.method === "shared" && <span className="text-muted"> — shared</span>}
+          {w.method === "playoff" && <span className="text-muted"> — via playoff</span>}
         </div>
-        <div className="text-sm text-white/90">
+        <div className="relative text-sm text-muted">
           {w.maxWins} match win{w.maxWins === 1 ? "" : "s"} · eligible players earn 3 league points{finalized ? "" : " when finalized"}
         </div>
       </div>
@@ -227,33 +246,21 @@ export function StandingsTable({ rows, compact, highlight }: { rows: (StandingRo
     <div className="overflow-x-auto">
       <table className="num w-full text-left text-[15px]">
         <caption className="sr-only">League table</caption>
-        <thead className="text-xs uppercase tracking-wide text-muted">
+        <thead className="text-xs text-muted">
           <tr className="border-b border-line">
-            <th className="w-12 px-3 py-2.5 font-semibold">Pos</th>
-            <th className="px-2 py-2.5 font-semibold">Player</th>
-            <th className="px-2 py-2.5 text-center font-semibold" title="League points">
-              Pts
-            </th>
-            <th className="px-2 py-2.5 text-center font-semibold" title="Daily wins">
-              DW
-            </th>
-            {!compact && (
-              <th className="px-2 py-2.5 text-center font-semibold" title="Appearances">
-                App
-              </th>
-            )}
-            <th className="px-2 py-2.5 text-center font-semibold" title="Goals">
-              G
-            </th>
-            <th className="px-2 py-2.5 pr-3 text-center font-semibold" title="Assists">
-              A
-            </th>
+            <th className="w-14 px-4 py-3 font-normal">Pos</th>
+            <th className="px-2 py-3 font-normal">Player</th>
+            <th className="px-2 py-3 text-center font-normal" title="League points">Pts</th>
+            <th className="px-2 py-3 text-center font-normal" title="Daily wins">DW</th>
+            {!compact && <th className="px-2 py-3 text-center font-normal" title="Appearances">App</th>}
+            <th className="px-2 py-3 text-center font-normal" title="Goals">G</th>
+            <th className="px-2 py-3 pr-4 text-center font-normal" title="Assists">A</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.playerId} className={cx("border-b border-line last:border-0", r.playerId === highlight && "bg-pitch-50 font-semibold", r.position === 1 && "bg-gold-soft/40")}>
-              <td className="px-3 py-3 font-bold">
+            <tr key={r.playerId} className={cx("border-b border-line transition last:border-0 hover:bg-chalk", r.playerId === highlight && "bg-pitch-50")}>
+              <td className="px-4 py-3.5 text-xl font-light tracking-tight text-muted">
                 {r.shared ? "=" : ""}
                 {r.position}
               </td>
@@ -262,11 +269,11 @@ export function StandingsTable({ rows, compact, highlight }: { rows: (StandingRo
                   {r.displayName}
                 </Link>
               </td>
-              <td className="px-2 text-center text-base font-bold text-pitch-800">{r.points}</td>
+              <td className="px-2 text-center text-lg font-medium text-pitch-800">{r.points}</td>
               <td className="px-2 text-center">{r.dailyWins}</td>
               {!compact && <td className="px-2 text-center">{r.appearances}</td>}
               <td className="px-2 text-center">{r.goals}</td>
-              <td className="px-2 pr-3 text-center">{r.assists}</td>
+              <td className="px-2 pr-4 text-center">{r.assists}</td>
             </tr>
           ))}
         </tbody>
@@ -288,6 +295,39 @@ export function DayHeaderMeta({ detail, onDark }: { detail: MatchDayDetail; onDa
       )}{" "}
       · {day.setCount} sets of {day.teamSize}
       {day.status === "checkin_open" && <> · Check-in closes {formatInstant(day.checkinDeadline, day.timezone)}</>}
+    </div>
+  );
+}
+
+export function DayCards({ detail }: { detail: MatchDayDetail }) {
+  const cards = detail.cards.filter((k) => !k.voided);
+  if (cards.length === 0) return null;
+  return (
+    <Card className="p-4">
+      <h3 className="mb-2 font-semibold">Cards</h3>
+      <ul className="space-y-1.5 text-sm">
+        {cards.map((k) => (
+          <li key={k.id} className="flex items-center gap-2">
+            <CardIcon color={k.color} />
+            <Link to={`/players/${k.playerId}`} className="hover:underline">{k.displayName}</Link>
+            {k.reason && <span className="text-muted">· {k.reason}</span>}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+export function TeamSheetCountdown({ detail }: { detail: MatchDayDetail }) {
+  const at = detail.day.teamSheetAt;
+  return (
+    <div className="rounded-2xl border border-dashed border-pitch-300 bg-white px-5 py-8 text-center">
+      <div className="text-3xl" aria-hidden>📋</div>
+      <p className="mt-2 text-[26px] font-medium leading-tight tracking-[-0.025em]">Team sheet coming</p>
+      <p className="mt-1 text-sm text-muted">
+        Teams are revealed at <b className="text-ink">{detail.day.teamSheetLocal?.time ?? "07:50"}</b> on match day
+        {at ? ` (${formatInstant(at, detail.day.timezone, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })} WAT)` : ""}.
+      </p>
     </div>
   );
 }

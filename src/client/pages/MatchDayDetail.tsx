@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
-import { CheckInPanel, DayHeaderMeta, MatchesList, SetTable, TeamsGrid, WinnerBanner } from "../components/matchday";
-import { Badge, Button, Card, ConfirmDialog, cx, Empty, ErrorBox, Field, GuestBadge, Input, Loading, SectionTitle, Select, StatusBadge, useToast } from "../components/ui";
+import { CheckInPanel, DayCards, DayHeaderMeta, MatchesList, SetTable, TeamSheetCountdown, TeamsGrid, WinnerBanner } from "../components/matchday";
+import { MvpVote } from "../components/MvpVote";
+import { Badge, Button, Card, ConfirmDialog, cx, Empty, ErrorBox, Field, GuestBadge, Input, Loading, SectionTitle, Segmented, Select, StatusBadge, useToast } from "../components/ui";
 import { formatDateLong, REG_LABEL } from "../format";
 import { useDayMutation, useIsAdmin, useMatchDay } from "../hooks";
 import type { MatchDayDetail, Player, Registration } from "../types";
@@ -26,9 +27,10 @@ export default function MatchDayDetailPage() {
       <header>
         <div className="flex flex-wrap items-center gap-2">
           <StatusBadge status={d.day.status} />
-          <span className="text-xs font-semibold uppercase tracking-[0.14em] text-pitch-700">{d.day.seasonName}</span>
+          <span className="text-sm text-muted">{d.day.seasonName}</span>
+          {d.day.autoCreated && <Badge>Scheduled</Badge>}
         </div>
-        <h1 className="display mt-1 text-4xl font-bold uppercase leading-none sm:text-5xl">{formatDateLong(d.day.date)}</h1>
+        <h1 className="mt-2 text-[40px] font-light leading-[0.95] tracking-[-0.045em] sm:text-[52px]">{formatDateLong(d.day.date)}</h1>
         <div className="mt-1">
           <DayHeaderMeta detail={d} />
         </div>
@@ -47,25 +49,33 @@ export default function MatchDayDetailPage() {
           {d.me.points > 0 ? `You earned ${d.me.points} league points on this day.` : "You earned no league points on this day."}
         </div>
       )}
-      {d.day.status === "cancelled" && <div className="rounded-xl bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">This match day was cancelled. It awards no points.</div>}
+      {d.day.status === "cancelled" && (
+        <div className="relative overflow-hidden rounded-[22px] border border-red-100 bg-red-50 px-5 py-5 text-ember">
+          <span className="watermark !text-ember/10" aria-hidden>Off</span>
+          <div className="relative text-sm">Match day cancelled</div>
+          <div className="relative mt-1 text-2xl font-light tracking-tight">{d.day.cancelReason ?? "No reason given."}</div>
+          <div className="relative mt-1 text-sm text-ember/80">Cancelled days award no points.</div>
+        </div>
+      )}
 
-      <div role="tablist" className="grid grid-cols-3 gap-1 rounded-xl bg-stone-200/70 p-1">
-        {(["players", "teams", "results"] as Tab[]).map((t) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={current === t}
-            onClick={() => setTab(t)}
-            className={cx("min-h-11 rounded-lg text-sm font-semibold capitalize", current === t ? "bg-white shadow-sm text-ink" : "text-muted")}
-          >
-            {t === "players" ? `Players (${d.counts.confirmed})` : t}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        label="Match day sections"
+        value={current}
+        onChange={setTab}
+        options={[
+          { value: "players", label: `Players · ${d.counts.confirmed}` },
+          { value: "teams", label: "Teams" },
+          { value: "results", label: "Results" },
+        ]}
+      />
 
       {current === "players" && <PlayersTab detail={d} isAdmin={isAdmin} />}
+      {d.mvp && <MvpVote poll={d.mvp} />}
+
       {current === "teams" &&
-        (d.sets.length === 0 ? (
+        (!d.day.teamsVisible ? (
+          <TeamSheetCountdown detail={d} />
+        ) : d.sets.length === 0 ? (
           <Empty title="Teams not picked yet" action={isAdmin && ["checkin_open", "locked"].includes(d.day.status) ? <Link to={`/matchdays/${d.day.id}/teams`}><Button>Pick teams</Button></Link> : undefined}>
             Teams are published once check-in closes.
           </Empty>
@@ -74,9 +84,19 @@ export default function MatchDayDetailPage() {
         ))}
       {current === "results" && (
         <div className="space-y-4">
+          {isAdmin && d.sets.length > 0 && ["checkin_open", "locked", "in_progress", "finalized"].includes(d.day.status) && (
+            <Link to={`/matchdays/${d.day.id}/live`} className="flex items-center justify-between gap-3 rounded-[22px] bg-pitch-700 px-5 py-4 text-white transition hover:bg-pitch-800">
+              <span>
+                <span className="block text-lg font-medium">{d.day.status === "finalized" ? "Correct results" : "Record results"}</span>
+                <span className="text-sm text-white/80">{d.day.status === "in_progress" ? `${d.matches.length} match${d.matches.length === 1 ? "" : "es"} recorded` : d.day.status === "finalized" ? "Changes are audited" : "Start play, then enter each match's score"}</span>
+              </span>
+              <span aria-hidden className="text-2xl">→</span>
+            </Link>
+          )}
           <WinnerBanner detail={d} />
           {d.sets.length > 0 && <SetTable detail={d} />}
           <MatchesList detail={d} />
+          <DayCards detail={d} />
         </div>
       )}
     </div>
@@ -104,9 +124,9 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
   };
 
   return (
-    <Card className="space-y-3 border-pitch-200 bg-pitch-50/50 p-4">
+    <Card className="space-y-3 bg-chalk p-5">
       <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold uppercase tracking-[0.14em] text-pitch-800">Admin</div>
+        <div className="text-sm text-muted">Admin controls</div>
         {["draft", "checkin_open", "locked", "in_progress"].includes(day.status) && (
           <button className="text-sm font-semibold text-pitch-700 hover:underline" onClick={() => setEditing((e) => !e)}>
             {editing ? "Close" : "Edit details"}
@@ -123,9 +143,14 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
           </Link>
         )}
         {["checkin_open", "locked"].includes(day.status) && detail.sets.length > 0 && <Button onClick={() => setConfirm("start")}>Start play</Button>}
-        {(day.status === "in_progress" || day.status === "finalized") && (
+        {(day.status === "in_progress" || day.status === "finalized" || detail.sets.length > 0) && day.status !== "cancelled" && (
           <Link to={`/matchdays/${day.id}/live`}>
-            <Button variant={day.status === "in_progress" ? "primary" : "secondary"}>{day.status === "in_progress" ? "Enter results" : "Correct results"}</Button>
+            <Button variant={day.status === "finalized" ? "secondary" : "primary"}>{day.status === "finalized" ? "Correct results" : "Record results"}</Button>
+          </Link>
+        )}
+        {["checkin_open", "locked", "in_progress"].includes(day.status) && detail.sets.length > 0 && (
+          <Link to={`/matchdays/${day.id}/add-guest`}>
+            <Button variant="secondary">+ Guest on pitch{detail.guestSlots != null && ` (${detail.guestSlots} left)`}</Button>
           </Link>
         )}
         {day.status === "in_progress" && (
@@ -179,14 +204,17 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
       <ConfirmDialog
         open={confirm === "cancel"}
         title="Cancel this match day?"
+        reasonPlaceholder="e.g. Pitch is waterlogged"
         confirmLabel="Cancel day"
         tone="danger"
-        requireReason={day.status === "in_progress" || day.status === "finalized"}
+        requireReason
         loading={transition.isPending}
         onClose={() => setConfirm(null)}
         onConfirm={(reason) => transition.mutate({ to: "cancelled", reason: reason || undefined }, { onSettled: () => setConfirm(null) })}
       >
-        Cancelled match days award no points.{day.status === "finalized" && " Points already awarded for this day will be removed."}
+        Players see your reason on the match day and the home screen, and it's posted as a pinned announcement. Cancelled days award no points.
+        {day.status === "finalized" && " Points already awarded for this day will be removed."}
+        {detail.registrations.some((r) => r.feeStatus === "paid") && " Some guests already paid this day's fee — refund them or agree a credit; it isn't automatic."}
       </ConfirmDialog>
     </Card>
   );
@@ -206,6 +234,7 @@ function EditDetails({ detail, onDone }: { detail: MatchDayDetail; onDone: () =>
     setCount: String(day.setCount),
     tiePolicy: day.tiePolicy,
     notes: day.notes,
+    teamSheetTime: day.teamSheetLocal?.time ?? "07:50",
   });
   const save = useDayMutation(
     day.id,
@@ -213,7 +242,7 @@ function EditDetails({ detail, onDone }: { detail: MatchDayDetail; onDone: () =>
       api.patch(
         `/matchdays/${day.id}`,
         started
-          ? { tiePolicy: f.tiePolicy, notes: f.notes }
+          ? { tiePolicy: f.tiePolicy, notes: f.notes, teamSheetTime: f.teamSheetTime }
           : { ...f, capacity: Number(f.capacity), teamSize: Number(f.teamSize), setCount: Number(f.setCount) },
       ),
     "Saved",
@@ -246,6 +275,7 @@ function EditDetails({ detail, onDone }: { detail: MatchDayDetail; onDone: () =>
         </Select>
       </Field>
       <Field label="Notes"><Input value={f.notes} onChange={set("notes")} /></Field>
+      <Field label="Team sheet visible from" hint="Local time on match day."><Input type="time" value={f.teamSheetTime} onChange={set("teamSheetTime")} /></Field>
       <div className="sm:col-span-2">
         <Button type="submit" loading={save.isPending}>Save changes</Button>
       </div>
@@ -260,6 +290,7 @@ function PlayersTab({ detail, isAdmin }: { detail: MatchDayDetail; isAdmin: bool
   const groups: { title: string; status: Registration["status"]; empty?: string }[] = [
     { title: "Playing", status: "confirmed", empty: "Nobody has checked in yet." },
     { title: "Waiting list", status: "waitlist" },
+    { title: "Not available", status: "unavailable" },
     ...(isAdmin ? [{ title: "Guest requests", status: "pending" as const }, { title: "Withdrawn / declined", status: "withdrawn" as const }] : []),
   ];
   const attendanceMode = isAdmin && ["locked", "in_progress", "finalized"].includes(detail.day.status);
@@ -267,6 +298,14 @@ function PlayersTab({ detail, isAdmin }: { detail: MatchDayDetail; isAdmin: bool
     <div className="space-y-6">
       {isAdmin && ["draft", "checkin_open", "locked"].includes(detail.day.status) && <AddPlayer detail={detail} />}
       {attendanceMode && <AttendanceHelp detail={detail} />}
+      {isAdmin && detail.noResponse.length > 0 && (
+        <section>
+          <SectionTitle>
+            No response yet <span className="text-muted">({detail.noResponse.length})</span>
+          </SectionTitle>
+          <p className="text-sm text-muted">{detail.noResponse.map((p) => p.displayName).join(", ")}</p>
+        </section>
+      )}
       {groups.map((g) => {
         const rows = regs.filter((r) => (g.status === "withdrawn" ? r.status === "withdrawn" || r.status === "rejected" : r.status === g.status));
         if (rows.length === 0 && !g.empty) return null;
@@ -302,6 +341,11 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
     api.post(`/matchdays/${dayId}/attendance`, { entries: [{ playerId: reg.playerId, attended: v.attended }], reason: v.reason }),
   );
   const editable = ["draft", "checkin_open", "locked"].includes(detail.day.status);
+  const [waiveOpen, setWaiveOpen] = useState(false);
+  const fee = useDayMutation(dayId, async (v: { action: "mark-paid" | "waive"; reason?: string }) => {
+    await api.post(`/registrations/${reg.id}/fee/${v.action}`, { reason: v.reason });
+    return api.get(`/matchdays/${dayId}`);
+  }, "Guest fee updated");
   const setAttendance = (attended: boolean | null) => (finalized ? setPendingAttendance(attended) : attend.mutate({ attended }));
   return (
     <li className="flex flex-wrap items-center gap-2 px-4 py-2.5">
@@ -313,16 +357,26 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
           </Link>
           {reg.kind === "guest" && <GuestBadge />}
           {reg.status !== "confirmed" && reg.status !== "waitlist" && <Badge>{REG_LABEL[reg.status]}</Badge>}
+          {reg.feeStatus === "unpaid" && <Badge tone="red">Fee owed ₦{(reg.feeAmount ?? 0).toLocaleString()}</Badge>}
+          {reg.feeStatus === "paid" && <Badge tone="green">Fee paid</Badge>}
+          {reg.feeStatus === "free" && <Badge tone="green">Free (5+ paid days)</Badge>}
+          {reg.feeStatus === "waived" && <Badge>Fee waived</Badge>}
         </div>
         {isAdmin && (reg.note || reg.contactPhone || reg.contactEmail) && (
           <div className="mt-0.5 text-xs text-muted">{[reg.note, reg.contactPhone, reg.contactEmail].filter(Boolean).join(" · ")}</div>
         )}
       </div>
+      {isAdmin && reg.feeStatus === "unpaid" && ["draft", "checkin_open", "locked", "in_progress", "finalized"].includes(detail.day.status) && (
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="secondary" loading={fee.isPending} onClick={() => fee.mutate({ action: "mark-paid" })}>Paid cash</Button>
+          <Button size="sm" variant="ghost" onClick={() => setWaiveOpen(true)}>Waive</Button>
+        </div>
+      )}
       {isAdmin && editable && (
         <div className="flex gap-1.5">
           {reg.status === "pending" && (
             <>
-              <Button size="sm" onClick={() => act.mutate("approve")} loading={act.isPending}>Approve</Button>
+              <Button size="sm" onClick={() => act.mutate("approve")} loading={act.isPending} title="Confirm now; the fee stays owed">Let play (fee owed)</Button>
               <Button size="sm" variant="danger" onClick={() => act.mutate("reject")}>Decline</Button>
             </>
           )}
@@ -334,7 +388,7 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
           {(reg.status === "confirmed" || reg.status === "waitlist") && (
             <Button size="sm" variant="ghost" onClick={() => act.mutate("withdraw")}>Remove</Button>
           )}
-          {(reg.status === "withdrawn" || reg.status === "rejected") && (
+          {(reg.status === "withdrawn" || reg.status === "rejected" || reg.status === "unavailable") && (
             <Button size="sm" variant="ghost" onClick={() => act.mutate("restore")}>Restore</Button>
           )}
         </div>
@@ -357,6 +411,10 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
           </button>
         </div>
       )}
+      <ConfirmDialog open={waiveOpen} title="Waive guest fee?" requireReason confirmLabel="Waive" onClose={() => setWaiveOpen(false)}
+        onConfirm={(reason) => fee.mutate({ action: "waive", reason }, { onSettled: () => setWaiveOpen(false) })}>
+        {reg.displayName} won't owe the fee for this match day.
+      </ConfirmDialog>
       <ConfirmDialog
         open={pendingAttendance !== undefined}
         title="Correct attendance"

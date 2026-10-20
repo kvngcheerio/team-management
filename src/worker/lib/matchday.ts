@@ -20,6 +20,9 @@ export interface MatchDayRow {
   started_at: string | null;
   finalized_at: string | null;
   cancelled_at: string | null;
+  team_sheet_at: string | null;
+  cancel_reason: string | null;
+  auto_created: number;
   version: number;
   created_at: string;
   updated_at: string;
@@ -69,10 +72,12 @@ export interface RegistrationRow {
   id: string;
   match_day_id: string;
   player_id: string;
-  status: "pending" | "confirmed" | "waitlist" | "withdrawn" | "rejected";
+  status: "pending" | "confirmed" | "waitlist" | "withdrawn" | "rejected" | "unavailable";
   source: "self" | "admin" | "guest_form";
   attended: number | null;
   guest_note: string | null;
+  fee_status: "none" | "unpaid" | "paid" | "free" | "waived";
+  fee_amount: number;
   queued_at: string;
   created_at: string;
   display_name: string;

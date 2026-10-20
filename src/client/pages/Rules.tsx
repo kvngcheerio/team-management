@@ -17,7 +17,7 @@ export default function RulesPage() {
         </ol>
       </Card>
       <Card className="mt-4 bg-pitch-50 p-5">
-        <h2 className="display text-xl font-bold uppercase text-pitch-900">Example</h2>
+        <h2 className="text-xl font-medium tracking-[-0.02em]">Example</h2>
         <p className="mt-1 text-sm leading-relaxed">
           Red wins 3 matches, Blue 2, White 1. Red is the daily winner. Every Red player who was there and was a member when play started gets <b>3 points</b> — not 9. A guest playing for Red still gets 0 points but keeps their goals and assists.
         </p>

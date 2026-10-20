@@ -6,6 +6,7 @@ import type { AppEnv, Ctx } from "../env";
 import { safeStringEqual, sha256Hex } from "../lib/crypto";
 import { atomic, auditStmt, first, getSetting, guard, HttpError, newId, nowIso, stmt } from "../lib/db";
 import { rateLimit } from "../lib/rate-limit";
+import { accessSettings } from "../lib/access";
 import { body, zName } from "../lib/validate";
 
 export const publicRoutes = new Hono<AppEnv>();
@@ -85,8 +86,8 @@ publicRoutes.post("/setup", async (c) => {
     statements.push(
       stmt(
         db,
-        `INSERT INTO players (id, display_name, kind, user_id, contact_email, member_since, created_at, updated_at)
-         VALUES (?, ?, 'member', ?, ?, ?, ?, ?)`,
+        `INSERT INTO players (id, display_name, kind, user_id, contact_email, member_since, signup_source, created_at, updated_at)
+         VALUES (?, ?, 'member', ?, ?, ?, 'setup', ?, ?)`,
         newId(),
         input.name,
         userId,
@@ -209,12 +210,13 @@ publicRoutes.post("/public/matchdays/:token/guests", async (c) => {
     ),
     stmt(
       db,
-      `INSERT INTO registrations (id, match_day_id, player_id, status, source, guest_note, queued_at, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', 'guest_form', ?, ?, ?, ?)`,
+      `INSERT INTO registrations (id, match_day_id, player_id, status, source, guest_note, fee_status, fee_amount, queued_at, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', 'guest_form', ?, 'unpaid', ?, ?, ?, ?)`,
       newId(),
       day.id,
       playerId,
       input.note || null,
+      (await accessSettings(db)).guestFee,
       now,
       now,
       now,
@@ -263,6 +265,148 @@ publicRoutes.post("/public/invites/:token/accept", async (c) => {
       ],
       "This invite was already used.",
     );
+  } catch (err) {
+    await deleteUser(db, userId);
+    throw err;
+  }
+  return withCookies(c, { ok: true }, cookies);
+});
+
+// ---------------------------------------------------------------------------
+// Shareable signup link: anyone with the link can create an account, but they
+// can't play until an admin approves them.
+// ---------------------------------------------------------------------------
+
+async function signupLinkValid(db: D1Database, token: string) {
+  const [enabled, stored] = await Promise.all([getSetting(db, "signup_enabled", "0"), getSetting(db, "signup_token", "")]);
+  return enabled === "1" && stored.length > 0 && safeStringEqual(token, stored);
+}
+
+publicRoutes.get("/public/signup/:token", async (c) => {
+  const db = c.env.DB;
+  if (!(await signupLinkValid(db, c.req.param("token")))) throw new HttpError(410, "This signup link is no longer active. Ask an admin for the current link.");
+  return c.json({ groupName: await getSetting(db, "group_name", "Matchday") });
+});
+
+const zSignup = z.object({
+  name: zName,
+  email: zEmail,
+  password: zPassword,
+  phone: z.string().trim().max(30).regex(/^[+\d\s()-]*$/, "Enter a valid phone number").optional(),
+  website: z.string().max(200).optional(),
+});
+
+/** Everyone who signs up starts as a guest. Paying the guest fee lets them play; paying membership makes them a member. */
+async function selfSignup(c: Ctx, input: z.infer<typeof zSignup>, referredBy: string | null) {
+  const db = c.env.DB;
+  if (input.website) throw new HttpError(422, "Could not create the account.");
+  const { userId, cookies } = await createAccount(c, input.name, input.email, input.password);
+  const now = nowIso();
+  const playerId = newId();
+  try {
+    await atomic(db, [
+      stmt(
+        db,
+        `INSERT INTO players (id, display_name, kind, user_id, contact_email, contact_phone, approved, signup_source, referred_by, created_at, updated_at)
+         VALUES (?, ?, 'guest', ?, ?, ?, 1, 'signup_link', ?, ?, ?)`,
+        playerId,
+        input.name,
+        userId,
+        input.email,
+        input.phone || null,
+        referredBy,
+        now,
+        now,
+      ),
+      auditStmt(c, { action: "player.self_signup", entityType: "player", entityId: playerId, after: { name: input.name, referredBy } }),
+    ]);
+  } catch (err) {
+    await deleteUser(db, userId);
+    throw err;
+  }
+  return withCookies(c, { ok: true, kind: "guest" }, cookies);
+}
+
+publicRoutes.post("/public/signup/:token", async (c) => {
+  await rateLimit(c, "signup", 5, 600);
+  const input = await body(c, zSignup);
+  if (!(await signupLinkValid(c.env.DB, c.req.param("token")))) throw new HttpError(410, "This signup link is no longer active. Ask an admin for the current link.");
+  return selfSignup(c, input, null);
+});
+
+// Personal referral links: /r/<code>. The referrer earns wallet credit when the new player first pays.
+async function referrer(db: D1Database, code: string) {
+  const p = await first<{ id: string; display_name: string }>(db, "SELECT id, display_name FROM players WHERE referral_code = ? AND active = 1", code.toLowerCase());
+  if (!p) throw new HttpError(404, "This invite link isn't valid.");
+  return p;
+}
+
+publicRoutes.get("/public/r/:code", async (c) => {
+  const db = c.env.DB;
+  const r = await referrer(db, c.req.param("code"));
+  const s = await accessSettings(db);
+  return c.json({ groupName: await getSetting(db, "group_name", "Team Alpha"), referrerName: r.display_name, guestFee: s.guestFee, guestFreeAfter: s.guestFreeAfter, membershipFee: s.membershipFee, currency: s.currency });
+});
+
+publicRoutes.post("/public/r/:code", async (c) => {
+  await rateLimit(c, "signup", 5, 600);
+  const input = await body(c, zSignup);
+  const r = await referrer(c.env.DB, c.req.param("code"));
+  return selfSignup(c, input, r.id);
+});
+
+// ---------------------------------------------------------------------------
+// Admin invites: single-use links that create a new admin account.
+// ---------------------------------------------------------------------------
+
+async function loadAdminInvite(db: D1Database, token: string) {
+  const invite = await first<{ token_hash: string; expires_at: string; used_at: string | null }>(
+    db,
+    "SELECT token_hash, expires_at, used_at FROM admin_invites WHERE token_hash = ?",
+    await sha256Hex(token),
+  );
+  if (!invite || invite.used_at || Date.parse(invite.expires_at) < Date.now()) {
+    throw new HttpError(410, "This admin invite has expired or was already used.");
+  }
+  return invite;
+}
+
+publicRoutes.get("/public/admin-invites/:token", async (c) => {
+  await loadAdminInvite(c.env.DB, c.req.param("token"));
+  return c.json({ groupName: await getSetting(c.env.DB, "group_name", "Matchday") });
+});
+
+publicRoutes.post("/public/admin-invites/:token/accept", async (c) => {
+  await rateLimit(c, "admin-invite", 10, 600);
+  const input = await body(c, z.object({ name: zName, email: zEmail, password: zPassword, alsoPlayer: z.boolean().default(true) }));
+  const db = c.env.DB;
+  const invite = await loadAdminInvite(db, c.req.param("token"));
+  const { userId, cookies } = await createAccount(c, input.name, input.email, input.password);
+  const now = nowIso();
+  const statements = [
+    stmt(db, "UPDATE admin_invites SET used_at = ?, used_by = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?", now, userId, invite.token_hash, now),
+    guard(db),
+    stmt(db, "UPDATE user SET role = 'admin' WHERE id = ?", userId),
+    auditStmt(c, { action: "user.admin_invite_accepted", entityType: "user", entityId: userId, after: { email: input.email } }),
+  ];
+  if (input.alsoPlayer) {
+    statements.push(
+      stmt(
+        db,
+        `INSERT INTO players (id, display_name, kind, user_id, contact_email, member_since, signup_source, created_at, updated_at)
+         VALUES (?, ?, 'member', ?, ?, ?, 'invite', ?, ?)`,
+        newId(),
+        input.name,
+        userId,
+        input.email,
+        now,
+        now,
+        now,
+      ),
+    );
+  }
+  try {
+    await atomic(db, statements, "This admin invite was already used.");
   } catch (err) {
     await deleteUser(db, userId);
     throw err;

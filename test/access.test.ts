@@ -146,3 +146,12 @@ describe("authentication and authorization", () => {
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM players WHERE display_name = 'Late Joiner'").first("n")).toBe(1);
   });
 });
+
+import { allowedOrigins } from "../src/worker/auth";
+
+describe("allowed origins", () => {
+  it("trusts the main URL plus configured extras, ignoring junk", () => {
+    const o = allowedOrigins({ APP_ORIGINS: " https://matchday.example.workers.dev/ , not a url," } as never, "https://game.example.com");
+    expect(o).toEqual(["https://game.example.com", "https://matchday.example.workers.dev"]);
+  });
+});

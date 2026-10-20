@@ -9,11 +9,11 @@ export function cx(...c: (string | false | null | undefined)[]) {
 
 type Variant = "primary" | "secondary" | "ghost" | "danger" | "gold";
 const VARIANTS: Record<Variant, string> = {
-  primary: "bg-pitch-700 text-white hover:bg-pitch-800 active:bg-pitch-900 shadow-sm",
-  secondary: "bg-white text-ink border border-line hover:border-pitch-300 hover:bg-pitch-50",
+  primary: "bg-pitch-700 text-white hover:bg-pitch-800 active:bg-pitch-900",
+  secondary: "bg-white text-pitch-800 border border-pitch-700/40 hover:border-pitch-700 hover:bg-pitch-50",
   ghost: "text-pitch-800 hover:bg-pitch-50",
-  danger: "bg-white text-red-700 border border-red-200 hover:bg-red-50",
-  gold: "bg-gold text-white hover:brightness-95 shadow-sm",
+  danger: "bg-white text-ember border border-ember/40 hover:bg-red-50",
+  gold: "bg-ember text-white hover:brightness-95",
 };
 
 export function Button({
@@ -30,10 +30,10 @@ export function Button({
       {...rest}
       disabled={disabled || loading}
       className={cx(
-        "inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition select-none disabled:opacity-50 disabled:cursor-not-allowed",
-        size === "sm" && "min-h-9 px-3 text-sm",
-        size === "md" && "min-h-11 px-4 text-[15px]",
-        size === "lg" && "min-h-14 px-6 text-lg",
+        "inline-flex items-center justify-center gap-2 rounded-full font-medium transition select-none disabled:opacity-50 disabled:cursor-not-allowed",
+        size === "sm" && "min-h-9 px-3.5 text-sm",
+        size === "md" && "min-h-11 px-5 text-[15px]",
+        size === "lg" && "min-h-14 px-7 text-[17px]",
         VARIANTS[variant],
         className,
       )}
@@ -50,7 +50,7 @@ export function Spinner({ className = "size-5" }: { className?: string }) {
 
 export function Card({ children, className, ...rest }: { children: ReactNode; className?: string } & React.HTMLAttributes<HTMLDivElement>) {
   return (
-    <div {...rest} className={cx("rounded-2xl bg-white border border-line shadow-[0_1px_0_rgba(0,0,0,0.03)]", className)}>
+    <div {...rest} className={cx("rounded-[22px] bg-white border border-line", className)}>
       {children}
     </div>
   );
@@ -59,7 +59,7 @@ export function Card({ children, className, ...rest }: { children: ReactNode; cl
 export function SectionTitle({ children, action, className }: { children: ReactNode; action?: ReactNode; className?: string }) {
   return (
     <div className={cx("flex items-end justify-between gap-3 mb-3", className)}>
-      <h2 className="display text-2xl font-bold uppercase tracking-wide text-pitch-900">{children}</h2>
+      <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em] text-ink">{children}</h2>
       {action}
     </div>
   );
@@ -69,8 +69,8 @@ export function PageHeader({ title, kicker, action }: { title: ReactNode; kicker
   return (
     <header className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div>
-        {kicker && <div className="text-xs font-semibold uppercase tracking-[0.14em] text-pitch-700">{kicker}</div>}
-        <h1 className="display text-4xl font-bold uppercase leading-none text-ink sm:text-5xl">{title}</h1>
+        {kicker && <div className="mb-1 text-sm text-muted">{kicker}</div>}
+        <h1 className="text-[38px] font-medium leading-[1.02] tracking-[-0.035em] text-ink sm:text-5xl">{title}</h1>
       </div>
       {action}
     </header>
@@ -84,7 +84,7 @@ const BADGE: Record<string, string> = {
   red: "bg-red-100 text-red-800",
   blue: "bg-sky-100 text-sky-900",
   gold: "bg-gold-soft text-[#7a5a05]",
-  dark: "bg-pitch-900 text-white",
+  dark: "bg-ink text-white",
 };
 export function Badge({ children, tone = "gray", className }: { children: ReactNode; tone?: keyof typeof BADGE; className?: string }) {
   return <span className={cx("inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold whitespace-nowrap", BADGE[tone], className)}>{children}</span>;
@@ -102,7 +102,7 @@ export function GuestBadge() {
 export function Field({ label, hint, error, children }: { label: string; hint?: ReactNode; error?: string | null; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-sm font-semibold text-ink">{label}</span>
+      <span className="mb-1.5 block text-sm text-muted">{label}</span>
       {children}
       {hint && !error && <span className="mt-1 block text-xs text-muted">{hint}</span>}
       {error && <span className="mt-1 block text-sm font-medium text-red-700">{error}</span>}
@@ -110,7 +110,7 @@ export function Field({ label, hint, error, children }: { label: string; hint?: 
   );
 }
 
-const inputCls = "w-full min-h-12 rounded-xl border border-line bg-white px-3.5 text-base text-ink placeholder:text-stone-400 focus:border-pitch-500 focus:outline-none focus:ring-2 focus:ring-pitch-200";
+const inputCls = "w-full min-h-12 rounded-2xl border border-line bg-white px-4 text-base text-ink placeholder:text-stone-400 focus:border-pitch-700 focus:outline-none focus:ring-2 focus:ring-pitch-100";
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return <input {...props} className={cx(inputCls, props.className)} />;
 }
@@ -138,11 +138,11 @@ export function ErrorBox({ error, className }: { error: unknown; className?: str
 
 export function Empty({ title, children, action }: { title: string; children?: ReactNode; action?: ReactNode }) {
   return (
-    <div className="rounded-2xl border border-dashed border-line bg-white/60 px-5 py-10 text-center">
-      <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-pitch-50 text-2xl" aria-hidden>
+    <div className="rounded-[22px] border border-dashed border-line bg-chalk px-5 py-10 text-center">
+      <div className="mx-auto mb-3 grid size-12 place-items-center rounded-full bg-white text-2xl ring-1 ring-line" aria-hidden>
         ⚽
       </div>
-      <p className="display text-xl font-bold uppercase text-ink">{title}</p>
+      <p className="text-xl font-medium tracking-tight text-ink">{title}</p>
       {children && <div className="mx-auto mt-1 max-w-sm text-sm text-muted">{children}</div>}
       {action && <div className="mt-4">{action}</div>}
     </div>
@@ -202,7 +202,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             key={t.id}
             className={cx(
               "pointer-events-auto max-w-md rounded-xl px-4 py-3 text-sm font-semibold shadow-lg",
-              t.tone === "success" ? "bg-pitch-900 text-white" : "bg-red-700 text-white",
+              t.tone === "success" ? "bg-ink text-white" : "bg-ember text-white",
             )}
           >
             {t.message}
@@ -223,6 +223,7 @@ export function ConfirmDialog({
   onClose,
   loading,
   requireReason,
+  reasonPlaceholder = "e.g. Score entered wrongly",
 }: {
   open: boolean;
   title: string;
@@ -233,6 +234,7 @@ export function ConfirmDialog({
   onClose: () => void;
   loading?: boolean;
   requireReason?: boolean;
+  reasonPlaceholder?: string;
 }) {
   const [reason, setReason] = useState("");
   useEffect(() => {
@@ -241,13 +243,13 @@ export function ConfirmDialog({
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label={title}>
-      <Card className="w-full max-w-md p-5">
-        <h3 className="display text-2xl font-bold uppercase">{title}</h3>
+      <Card className="w-full max-w-md p-6">
+        <h3 className="text-2xl font-medium tracking-tight">{title}</h3>
         {children && <div className="mt-2 text-sm text-muted">{children}</div>}
         {requireReason && (
           <div className="mt-4">
             <Field label="Reason (recorded in the audit log)">
-              <Input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Score entered wrongly" />
+              <Input autoFocus value={reason} onChange={(e) => setReason(e.target.value)} placeholder={reasonPlaceholder} />
             </Field>
           </div>
         )}
@@ -260,6 +262,92 @@ export function ConfirmDialog({
           </Button>
         </div>
       </Card>
+    </div>
+  );
+}
+
+export function Avatar({ name, url, size = 36, className }: { name: string; url?: string | null; size?: number; className?: string }) {
+  const initials = name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join("");
+  const style = { width: size, height: size, fontSize: Math.max(11, size * 0.38) };
+  return url ? (
+    <img src={url} alt="" width={size} height={size} loading="lazy" className={cx("shrink-0 rounded-full object-cover ring-1 ring-black/10", className)} style={style} />
+  ) : (
+    <span aria-hidden className={cx("grid shrink-0 place-items-center rounded-full bg-pitch-100 font-bold text-pitch-800", className)} style={style}>
+      {initials || "?"}
+    </span>
+  );
+}
+
+export function CardIcon({ color, className }: { color: "yellow" | "red"; className?: string }) {
+  return (
+    <span
+      role="img"
+      aria-label={`${color} card`}
+      className={cx("inline-block h-4 w-3 rounded-[2px] ring-1 ring-black/20", color === "yellow" ? "bg-yellow-400" : "bg-red-600", className)}
+    />
+  );
+}
+
+/**
+ * Stat card in the reference style: label top-left, a big thin number bottom-left, an optional
+ * small note bottom-right, and a faint watermark word behind.
+ */
+export function StatTile({ label, value, note, watermark, tone, className }: { label: string; value: ReactNode; note?: ReactNode; watermark?: string; tone?: string; className?: string }) {
+  return (
+    <div className={cx("relative flex min-h-[150px] flex-col justify-between overflow-hidden rounded-[22px] border border-line bg-chalk p-5", className)}>
+      {watermark && <span className="watermark" aria-hidden>{watermark}</span>}
+      <div className="relative text-[15px] text-ink">{label}</div>
+      <div className="relative flex items-end justify-between gap-2">
+        <span className={cx("stat text-[56px] sm:text-[64px]", tone ?? "text-ink")}>{value}</span>
+        {note && <span className="mb-1 text-xs text-muted">{note}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** "Tude De Souza" style: leading names in grey, the last name in ink. */
+export function SplitName({ name, className }: { name: string; className?: string }) {
+  const parts = name.trim().split(/\s+/);
+  const last = parts.length > 1 ? parts.pop()! : parts[0]!;
+  const lead = parts.length > 0 && name.trim().includes(" ") ? parts.join(" ") + " " : "";
+  return (
+    <span className={className}>
+      {lead && <span className="text-muted">{lead}</span>}
+      <span className="text-ink">{last}</span>
+    </span>
+  );
+}
+
+/** Label-over-value pair for profile grids. */
+export function KeyValue({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div>
+      <div className="text-sm text-muted">{label}</div>
+      <div className="mt-0.5 text-[22px] leading-tight tracking-[-0.02em] text-ink">{value}</div>
+    </div>
+  );
+}
+
+/** Pill segmented control (tabs / filters), as in the reference's pill dropdowns. */
+export function Segmented<T extends string>({ value, onChange, options, label }: { value: T; onChange: (v: T) => void; options: { value: T; label: ReactNode }[]; label: string }) {
+  return (
+    <div role="tablist" aria-label={label} className="inline-flex max-w-full gap-1 overflow-x-auto rounded-full border border-line bg-white p-1">
+      {options.map((o) => (
+        <button
+          key={o.value}
+          role="tab"
+          aria-selected={value === o.value}
+          onClick={() => onChange(o.value)}
+          className={cx("min-h-10 whitespace-nowrap rounded-full px-4 text-sm transition", value === o.value ? "bg-pitch-700 font-medium text-white" : "text-muted hover:text-ink")}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }

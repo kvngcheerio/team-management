@@ -1,43 +1,94 @@
 @import "tailwindcss";
 
+/*
+ * Visual language: light editorial analytics on a pitch.
+ * White rounded panels over a green field, a light grotesk with large thin numerals,
+ * soft grey stat cards with faint watermark words, pill controls, and muted
+ * green / burnt-orange / tan accents.
+ */
 @theme {
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Barlow Condensed", "Arial Narrow", ui-sans-serif, sans-serif;
+  --font-sans: "Inter Tight Variable", "Inter Tight", ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-sans);
 
-  --color-pitch-50: #effaf2;
-  --color-pitch-100: #d8f2df;
-  --color-pitch-200: #b2e4c1;
-  --color-pitch-300: #7fcf9a;
-  --color-pitch-500: #2f9a57;
-  --color-pitch-600: #1f7d43;
-  --color-pitch-700: #186437;
-  --color-pitch-800: #134e2c;
-  --color-pitch-900: #0f3d24;
-  --color-pitch-950: #082414;
+  /* Greens (primary) */
+  --color-pitch-50: #eef5f1;
+  --color-pitch-100: #dcebe2;
+  --color-pitch-200: #b9d7c5;
+  --color-pitch-300: #8dbda1;
+  --color-pitch-500: #2f8a5e;
+  --color-pitch-600: #227650;
+  --color-pitch-700: #2f5d46;
+  --color-pitch-800: #264c3a;
+  --color-pitch-900: #1b3a2b;
+  --color-pitch-950: #0f2a1d;
 
-  --color-chalk: #f5f6f2;
-  --color-ink: #121a15;
-  --color-muted: #55625a;
-  --color-line: #dde3dc;
+  /* Accents */
+  --color-ember: #c83f1d;
+  --color-sand: #bf8a3e;
+  --color-sand-soft: #f3ece2;
+
+  /* Chart series (validated: scripts/validate_palette.js, light) */
+  --color-series-win: #16794b;
+  --color-series-played: #bf8a3e;
+  --color-series-absent: #c83f1d;
+
+  /* Neutrals */
+  --color-chalk: #f6f6f3;
+  --color-ink: #161616;
+  --color-muted: #6b6b66;
+  --color-line: #e7e7e2;
   --color-gold: #b7860b;
-  --color-gold-soft: #fbf1d3;
+  --color-gold-soft: #f7efd9;
+
+  --radius-panel: 28px;
 }
 
 html {
   -webkit-text-size-adjust: 100%;
-  background: var(--color-chalk);
+  background: var(--color-pitch-900);
 }
 body {
-  @apply bg-chalk text-ink font-sans antialiased;
+  @apply text-ink font-sans antialiased;
   min-height: 100dvh;
+  font-feature-settings: "ss01", "cv11";
+  /* A green pitch with chalk lines (pure CSS, no image). */
+  background:
+    linear-gradient(115deg, transparent 49.6%, rgb(255 255 255 / 0.16) 49.8%, rgb(255 255 255 / 0.16) 50.4%, transparent 50.6%) 0 0 / 100% 100% no-repeat,
+    linear-gradient(64deg, transparent 72.6%, rgb(255 255 255 / 0.12) 72.8%, rgb(255 255 255 / 0.12) 73.3%, transparent 73.5%) 0 0 / 100% 100% no-repeat,
+    radial-gradient(ellipse at 30% 20%, #2f6b4f 0%, #1f4a36 55%, #163828 100%) fixed;
 }
+
+/* Headings everywhere: the light grotesk, sentence case, tight tracking. */
 .display {
-  font-family: var(--font-display);
-  letter-spacing: 0.01em;
+  font-family: var(--font-sans);
+  font-weight: 500 !important;
+  text-transform: none !important;
+  letter-spacing: -0.025em !important;
 }
 .num {
   font-variant-numeric: tabular-nums;
 }
+/* Big thin numerals, as in the stat cards. */
+.stat {
+  font-weight: 300;
+  letter-spacing: -0.045em;
+  line-height: 0.9;
+  font-variant-numeric: tabular-nums;
+}
+/* Faint oversized word behind a stat. */
+.watermark {
+  position: absolute;
+  inset: auto -0.06em -0.18em auto;
+  font-size: 7.5rem;
+  font-weight: 400;
+  letter-spacing: -0.06em;
+  line-height: 1;
+  color: rgb(0 0 0 / 0.035);
+  pointer-events: none;
+  user-select: none;
+  white-space: nowrap;
+}
+
 :focus-visible {
   outline: 3px solid var(--color-pitch-500);
   outline-offset: 2px;

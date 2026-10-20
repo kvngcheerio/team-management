@@ -193,8 +193,9 @@ export default function TeamSelectionPage() {
               const total = s.players.reduce((n, p) => n + p.rating, 0);
               return (
                 <Card key={s.idx} className="overflow-hidden">
-                  <div className="flex items-center justify-between border-b border-line px-4 py-2.5" style={{ borderTop: `5px solid ${SET_COLORS[s.idx - 1]}` }}>
-                    <h3 className="display text-xl font-bold uppercase">{SET_NAMES[s.idx - 1]}</h3>
+                  <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-3.5">
+                    <span className="h-7 w-1.5 shrink-0 rounded-full" style={{ background: SET_COLORS[s.idx - 1] === "#f8fafc" ? "#d6d6d0" : SET_COLORS[s.idx - 1] }} aria-hidden />
+                    <h3 className="mr-auto text-xl font-medium tracking-[-0.02em]">{SET_NAMES[s.idx - 1]}</h3>
                     <div className="flex items-center gap-2">
                       <span className="num text-xs text-muted" title="Total private rating">
                         {s.players.length} · Σ{total}

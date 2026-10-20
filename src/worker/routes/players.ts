@@ -5,7 +5,8 @@ import { randomToken, sha256Hex } from "../lib/crypto";
 import { all, atomic, auditStmt, first, guard, HttpError, newId, nowIso, stmt } from "../lib/db";
 import { isAdmin, requireAdmin, requireUser } from "../lib/guards";
 import { commitDay, loadDayFull, toDayState } from "../lib/matchday";
-import { body, zName, zReason } from "../lib/validate";
+import { rateLimit } from "../lib/rate-limit";
+import { body, zId, zName, zReason } from "../lib/validate";
 
 export const playerRoutes = new Hono<AppEnv>();
 
@@ -20,6 +21,9 @@ export interface PlayerRow {
   gk_preference: "none" | "can" | "prefers";
   active: number;
   member_since: string | null;
+  approved: number;
+  signup_source: string;
+  avatar_updated_at: string | null;
   created_at: string;
 }
 
@@ -29,7 +33,10 @@ export const publicPlayer = (p: PlayerRow) => ({
   displayName: p.display_name,
   kind: p.kind,
   active: p.active === 1,
+  approved: p.approved === 1,
+  memberSince: p.member_since,
   hasAccount: Boolean(p.user_id),
+  avatarUrl: p.avatar_updated_at ? `/api/players/${p.id}/avatar?v=${encodeURIComponent(p.avatar_updated_at)}` : null,
 });
 
 /** Admin shape: includes private fields. */
@@ -39,8 +46,8 @@ export const adminPlayer = (p: PlayerRow & { email?: string | null }) => ({
   contactPhone: p.contact_phone,
   skillRating: p.skill_rating,
   gkPreference: p.gk_preference,
-  memberSince: p.member_since,
   accountEmail: p.email ?? null,
+  signupSource: p.signup_source,
   createdAt: p.created_at,
 });
 
@@ -60,7 +67,8 @@ playerRoutes.get("/players", requireUser, async (c) => {
     "SELECT p.*, u.email FROM players p LEFT JOIN user u ON u.id = p.user_id ORDER BY p.active DESC, p.kind DESC, p.display_name COLLATE NOCASE",
   );
   const admin = isAdmin(c);
-  return c.json({ players: rows.map((p) => (admin ? adminPlayer(p) : publicPlayer(p))) });
+  // Pending self-signups are only visible to admins.
+  return c.json({ players: rows.filter((p) => admin || p.approved === 1).map((p) => (admin ? adminPlayer(p) : publicPlayer(p))) });
 });
 
 playerRoutes.get("/players/:id", requireUser, async (c) => {
@@ -89,7 +97,14 @@ playerRoutes.get("/players/:id", requireUser, async (c) => {
     ),
   ]);
   const self = c.get("user")?.id === p.user_id;
-  return c.json({ player: isAdmin(c) ? adminPlayer(p) : publicPlayer(p), isSelf: self, seasons, history });
+  const cards = await all(
+    db,
+    `SELECT s.id AS seasonId, SUM(CASE WHEN k.color = 'yellow' THEN 1 ELSE 0 END) AS yellow, SUM(CASE WHEN k.color = 'red' THEN 1 ELSE 0 END) AS red
+       FROM cards k JOIN match_days md ON md.id = k.match_day_id AND md.status <> 'cancelled' JOIN seasons s ON s.id = md.season_id
+      WHERE k.player_id = ? AND k.voided_at IS NULL GROUP BY s.id`,
+    p.id,
+  );
+  return c.json({ player: isAdmin(c) ? adminPlayer(p) : publicPlayer(p), isSelf: self, seasons, history, cards });
 });
 
 const zPlayerFields = {
@@ -255,4 +270,171 @@ playerRoutes.post("/players/:id/unlink", requireAdmin, async (c) => {
     auditStmt(c, { action: "player.account_unlinked", entityType: "player", entityId: p.id, reason: input.reason, before: { userId: p.user_id } }),
   ]);
   return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Approval of self-signups
+// ---------------------------------------------------------------------------
+
+/**
+ * Approve a self-signup. Optionally merge it into an existing player record (e.g. someone the admin
+ * had already added manually): the login moves to that record so their history is kept.
+ */
+playerRoutes.post("/players/:id/approve", requireAdmin, async (c) => {
+  const input = await body(c, z.object({ mergeIntoPlayerId: zId.optional() }));
+  const db = c.env.DB;
+  const p = await loadPlayer(db, c.req.param("id"));
+  if (p.approved === 1) throw new HttpError(409, "This player is already approved.");
+  const now = nowIso();
+  if (input.mergeIntoPlayerId) {
+    const target = await loadPlayer(db, input.mergeIntoPlayerId);
+    if (target.id === p.id) throw new HttpError(422, "Choose a different player to merge into.");
+    if (target.user_id) throw new HttpError(409, "That player already has a login.");
+    await atomic(
+      db,
+      [
+        // The pending record has no history (it couldn't register), so it can be removed safely.
+        stmt(db, "DELETE FROM players WHERE id = ? AND approved = 0 AND NOT EXISTS (SELECT 1 FROM registrations WHERE player_id = ?)", p.id, p.id),
+        guard(db),
+        stmt(
+          db,
+          "UPDATE players SET user_id = ?, approved = 1, contact_email = COALESCE(contact_email, ?), contact_phone = COALESCE(contact_phone, ?), updated_at = ? WHERE id = ? AND user_id IS NULL",
+          p.user_id,
+          p.contact_email,
+          p.contact_phone,
+          now,
+          target.id,
+        ),
+        guard(db),
+        auditStmt(c, { action: "player.approve_merge", entityType: "player", entityId: target.id, before: { pendingPlayerId: p.id }, after: { userId: p.user_id } }),
+      ],
+      "The records changed. Refresh and try again.",
+    );
+    return c.json({ player: adminPlayer(await loadPlayer(db, target.id)) });
+  }
+  await atomic(db, [
+    stmt(db, "UPDATE players SET approved = 1, member_since = COALESCE(member_since, ?), updated_at = ? WHERE id = ? AND approved = 0", now, now, p.id),
+    guard(db),
+    auditStmt(c, { action: "player.approve", entityType: "player", entityId: p.id }),
+  ]);
+  return c.json({ player: adminPlayer(await loadPlayer(db, p.id)) });
+});
+
+/** Reject a self-signup: removes the pending player and its login. */
+playerRoutes.post("/players/:id/reject", requireAdmin, async (c) => {
+  const db = c.env.DB;
+  const p = await loadPlayer(db, c.req.param("id"));
+  if (p.approved === 1) throw new HttpError(409, "Only pending signups can be rejected. Deactivate approved players instead.");
+  const statements = [
+    stmt(db, "DELETE FROM player_avatars WHERE player_id = ?", p.id),
+    stmt(db, "DELETE FROM players WHERE id = ? AND approved = 0 AND NOT EXISTS (SELECT 1 FROM registrations WHERE player_id = ?)", p.id, p.id),
+    guard(db),
+    auditStmt(c, { action: "player.reject_signup", entityType: "player", entityId: p.id, before: { name: p.display_name, email: p.email } }),
+  ];
+  if (p.user_id) {
+    statements.push(
+      stmt(db, "DELETE FROM session WHERE userId = ?", p.user_id),
+      stmt(db, "DELETE FROM account WHERE userId = ?", p.user_id),
+      stmt(db, "DELETE FROM user WHERE id = ? AND role <> 'admin'", p.user_id),
+    );
+  }
+  await atomic(db, statements);
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Profile photos (self or admin). Images are resized in the browser before upload.
+// ---------------------------------------------------------------------------
+
+const MAX_AVATAR_BYTES = 200 * 1024;
+
+function canEditPlayer(c: Ctx, p: PlayerRow) {
+  return isAdmin(c) || (p.user_id !== null && p.user_id === c.get("user")?.id);
+}
+
+playerRoutes.get("/players/:id/avatar", requireUser, async (c) => {
+  const row = await first<{ content_type: string; data: ArrayBuffer | number[] }>(
+    c.env.DB,
+    "SELECT content_type, data FROM player_avatars WHERE player_id = ?",
+    c.req.param("id"),
+  );
+  if (!row) throw new HttpError(404, "No photo.");
+  const bytes = row.data instanceof ArrayBuffer ? new Uint8Array(row.data) : Uint8Array.from(row.data);
+  return new Response(bytes, {
+    headers: {
+      "Content-Type": row.content_type,
+      // URLs carry a version (?v=updated_at), so they can be cached.
+      "Cache-Control": "private, max-age=31536000, immutable",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+});
+
+playerRoutes.put("/players/:id/avatar", requireUser, async (c) => {
+  await rateLimit(c, "avatar", 20, 600);
+  const input = await body(c, z.object({ dataUrl: z.string().max(400_000) }));
+  const db = c.env.DB;
+  const p = await loadPlayer(db, c.req.param("id"));
+  if (!canEditPlayer(c, p)) throw new HttpError(403, "You can only change your own photo.");
+  const match = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(input.dataUrl);
+  if (!match) throw new HttpError(422, "Upload a JPEG, PNG or WebP image.");
+  const bytes = Uint8Array.from(atob(match[2]!), (ch) => ch.charCodeAt(0));
+  if (bytes.byteLength > MAX_AVATAR_BYTES) throw new HttpError(422, "The image is too large (max 200 KB after resizing).");
+  if (!looksLikeImage(bytes, match[1]!)) throw new HttpError(422, "That file doesn't look like a valid image.");
+  const now = nowIso();
+  await atomic(db, [
+    stmt(
+      db,
+      `INSERT INTO player_avatars (player_id, content_type, data, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (player_id) DO UPDATE SET content_type = excluded.content_type, data = excluded.data, updated_at = excluded.updated_at`,
+      p.id,
+      match[1],
+      bytes,
+      now,
+    ),
+    stmt(db, "UPDATE players SET avatar_updated_at = ?, updated_at = ? WHERE id = ?", now, now, p.id),
+  ]);
+  return c.json({ player: isAdmin(c) ? adminPlayer(await loadPlayer(db, p.id)) : publicPlayer(await loadPlayer(db, p.id)) });
+});
+
+playerRoutes.delete("/players/:id/avatar", requireUser, async (c) => {
+  const db = c.env.DB;
+  const p = await loadPlayer(db, c.req.param("id"));
+  if (!canEditPlayer(c, p)) throw new HttpError(403, "You can only change your own photo.");
+  await atomic(db, [
+    stmt(db, "DELETE FROM player_avatars WHERE player_id = ?", p.id),
+    stmt(db, "UPDATE players SET avatar_updated_at = NULL, updated_at = ? WHERE id = ?", nowIso(), p.id),
+  ]);
+  return c.json({ ok: true });
+});
+
+/** Magic-byte check so arbitrary files can't be stored as images. */
+function looksLikeImage(b: Uint8Array, type: string): boolean {
+  if (type === "image/jpeg") return b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  if (type === "image/png") return b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47;
+  if (type === "image/webp") return String.fromCharCode(...b.slice(0, 4)) === "RIFF" && String.fromCharCode(...b.slice(8, 12)) === "WEBP";
+  return false;
+}
+
+/** Players edit their own display name and phone. */
+playerRoutes.patch("/me/player", requireUser, async (c) => {
+  const input = await body(
+    c,
+    z.object({ displayName: zName.optional(), contactPhone: z.string().trim().max(30).regex(/^[+\d\s()-]*$/, "Enter a valid phone number").nullable().optional() }),
+  );
+  const db = c.env.DB;
+  const p = await first<PlayerRow & { email: string | null }>(db, "SELECT p.*, u.email FROM players p LEFT JOIN user u ON u.id = p.user_id WHERE p.user_id = ?", c.get("user")!.id);
+  if (!p) throw new HttpError(404, "Your login isn't linked to a player profile.");
+  await atomic(db, [
+    stmt(
+      db,
+      "UPDATE players SET display_name = ?, contact_phone = ?, updated_at = ? WHERE id = ?",
+      input.displayName ?? p.display_name,
+      input.contactPhone === undefined ? p.contact_phone : input.contactPhone || null,
+      nowIso(),
+      p.id,
+    ),
+    auditStmt(c, { action: "player.self_update", entityType: "player", entityId: p.id, before: { displayName: p.display_name }, after: { displayName: input.displayName ?? p.display_name } }),
+  ]);
+  return c.json({ player: publicPlayer(await loadPlayer(db, p.id)) });
 });

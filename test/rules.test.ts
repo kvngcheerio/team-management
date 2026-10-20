@@ -326,3 +326,67 @@ describe("timezone helpers", () => {
     expect(zonedToUtcIso("2026-12-01", "12:00", "Europe/London")).toBe("2026-12-01T12:00:00.000Z");
   });
 });
+
+import { chooseSetForLateGuest, guestSlotsLeft } from "../src/shared/rules";
+
+describe("late guests", () => {
+  const fills = [
+    { setId: "A", idx: 1, size: 5, totalRating: 30 },
+    { setId: "B", idx: 2, size: 4, totalRating: 26 },
+    { setId: "C", idx: 3, size: 4, totalRating: 22 },
+    { setId: "D", idx: 4, size: 3, totalRating: 25 },
+  ];
+  it("joins the smallest set with room, then the weakest, then the lowest number", () => {
+    expect(chooseSetForLateGuest(fills, 5)!.setId).toBe("D");
+    expect(chooseSetForLateGuest(fills.filter((f) => f.setId !== "D"), 5)!.setId).toBe("C");
+    expect(chooseSetForLateGuest([{ setId: "X", idx: 2, size: 4, totalRating: 20 }, { setId: "Y", idx: 1, size: 4, totalRating: 20 }], 5)!.setId).toBe("Y");
+  });
+  it("returns null when every set has 5", () => {
+    expect(chooseSetForLateGuest(fills.map((f) => ({ ...f, size: 5 })), 5)).toBeNull();
+  });
+  it("counts guest spots from team sizes, capped by capacity", () => {
+    expect(guestSlotsLeft(fills, 5, 30, 16)).toBe(4); // 0+1+1+2
+    expect(guestSlotsLeft(fills, 5, 18, 16)).toBe(2); // capacity limits it
+    expect(guestSlotsLeft(fills.map((f) => ({ ...f, size: 5 })), 5, 30, 20)).toBe(0);
+  });
+});
+
+import { applyWallet, guestFeeFor, nextMembershipPeriod, renewalStatus } from "../src/shared/rules";
+
+describe("paid access rules", () => {
+  it("charges guests per match day until 5 paid days in the season, then free", () => {
+    expect(guestFeeFor(0, 5000, 5)).toEqual({ amount: 5000, free: false });
+    expect(guestFeeFor(4, 5000, 5)).toEqual({ amount: 5000, free: false });
+    expect(guestFeeFor(5, 5000, 5)).toEqual({ amount: 0, free: true });
+    expect(guestFeeFor(9, 5000, 5)).toEqual({ amount: 0, free: true });
+  });
+  it("applies wallet credit first, never more than the total or balance", () => {
+    expect(applyWallet(100000, 1500, true)).toEqual({ wallet: 1500, external: 98500 });
+    expect(applyWallet(2000, 3500, true)).toEqual({ wallet: 2000, external: 0 });
+    expect(applyWallet(2000, 3500, false)).toEqual({ wallet: 0, external: 2000 });
+    expect(applyWallet(2000, 0, true)).toEqual({ wallet: 0, external: 2000 });
+  });
+  it("extends membership by six months from the later of today or the current expiry", () => {
+    expect(nextMembershipPeriod(null, "2026-10-20", 6)).toEqual({ start: "2026-10-20", end: "2027-04-19" });
+    expect(nextMembershipPeriod("2026-12-31", "2026-10-20", 6)).toEqual({ start: "2027-01-01", end: "2027-06-30" });
+    expect(nextMembershipPeriod("2026-01-31", "2026-10-20", 6)).toEqual({ start: "2026-10-20", end: "2027-04-19" });
+  });
+  it("only reminds about renewal; guests aren't members", () => {
+    expect(renewalStatus("guest", null, "2026-10-20")).toBe("not_member");
+    expect(renewalStatus("member", "2027-04-19", "2026-10-20")).toBe("current");
+    expect(renewalStatus("member", "2026-11-10", "2026-10-20")).toBe("due_soon");
+    expect(renewalStatus("member", "2026-10-01", "2026-10-20")).toBe("overdue");
+  });
+});
+
+import { isoWeekday, parseWeekdays, scheduledDates } from "../src/shared/rules";
+
+describe("weekly schedule", () => {
+  it("finds ISO weekdays and the scheduled dates in a window", () => {
+    expect(isoWeekday("2026-10-19")).toBe(1); // Monday
+    expect(isoWeekday("2026-10-25")).toBe(7); // Sunday
+    expect(parseWeekdays("6, 2,2, 9, x")).toEqual([2, 6]);
+    expect(scheduledDates("2026-10-19", 14, [2, 6])).toEqual(["2026-10-20", "2026-10-24", "2026-10-27", "2026-10-31"]);
+    expect(scheduledDates("2026-10-19", 7, [])).toEqual([]);
+  });
+});

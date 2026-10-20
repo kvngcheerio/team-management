@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { validateGoalEvent } from "../../shared/rules";
 import type { AppEnv, Ctx } from "../env";
-import { first, HttpError, nowIso, stmt } from "../lib/db";
+import { first, guard, HttpError, nowIso, stmt } from "../lib/db";
 import { requireAdmin } from "../lib/guards";
 import { commitDay, correctionContext, loadDayFull, toDayState, type MatchRow } from "../lib/matchday";
 import { body, zId, zReason } from "../lib/validate";
@@ -36,7 +36,16 @@ const action = (isCorrection: boolean, name: string) => (isCorrection ? `correct
 matchRoutes.post("/matchdays/:id/matches", requireAdmin, async (c) => {
   const input = await body(
     c,
-    z.object({ id: z.string().uuid().optional(), homeSetId: zId, awaySetId: zId, isPlayoff: z.boolean().default(false), reason: zReason }),
+    z.object({
+      id: z.string().uuid().optional(),
+      homeSetId: zId,
+      awaySetId: zId,
+      isPlayoff: z.boolean().default(false),
+      // Record a finished match in one go: goals are stored as unattributed so the score reconciles;
+      // scorers can be named afterwards.
+      final: z.object({ homeScore: z.number().int().min(0).max(30), awayScore: z.number().int().min(0).max(30) }).optional(),
+      reason: zReason,
+    }),
   );
   const db = c.env.DB;
   if (input.id && (await first(db, "SELECT 1 FROM matches WHERE id = ?", input.id))) return detail(c, c.req.param("id"));
@@ -45,32 +54,50 @@ matchRoutes.post("/matchdays/:id/matches", requireAdmin, async (c) => {
   if (!setIds.has(input.homeSetId) || !setIds.has(input.awaySetId)) throw new HttpError(422, "Both sets must belong to this match day.");
   if (input.homeSetId === input.awaySetId) throw new HttpError(422, "A set cannot play itself.");
   if (input.isPlayoff && loaded.day.tie_policy !== "playoff") throw new HttpError(422, "Switch the tie policy to playoff before recording a playoff match.");
-  if (loaded.matches.some((m) => m.status === "in_progress")) throw new HttpError(409, "Finish the current match before starting another.");
+  if (!input.final && loaded.matches.some((m) => m.status === "in_progress")) throw new HttpError(409, "Finish the current match before starting another.");
   const id = input.id ?? crypto.randomUUID();
   const now = nowIso();
   const state = toDayState(loaded);
   state.matches.push({ id, homeSetId: input.homeSetId, awaySetId: input.awaySetId, homeScore: 0, awayScore: 0, status: "in_progress", isPlayoff: input.isPlayoff });
-  // Corrections add matches directly as completed 0–0; scores are then edited.
-  const status = isCorrection ? "completed" : "in_progress";
-  if (isCorrection) state.matches[state.matches.length - 1]!.status = "completed";
+  // Corrections and final-score entries are stored as completed.
+  const status = isCorrection || input.final ? "completed" : "in_progress";
+  const newMatch = state.matches[state.matches.length - 1]!;
+  newMatch.status = status;
+  const goalStatements: D1PreparedStatement[] = [];
+  if (input.final) {
+    newMatch.homeScore = input.final.homeScore;
+    newMatch.awayScore = input.final.awayScore;
+    const add = (setId: string, n: number) => {
+      for (let i = 0; i < n; i++) {
+        const gid = crypto.randomUUID();
+        state.goals.push({ id: gid, matchId: id, setId, kind: "unattributed", scorerPlayerId: null, assistPlayerId: null });
+        goalStatements.push(stmt(db, "INSERT INTO goal_events (id, match_id, set_id, kind, created_at) VALUES (?, ?, ?, 'unattributed', ?)", gid, id, setId, now));
+      }
+    };
+    add(input.homeSetId, input.final.homeScore);
+    add(input.awaySetId, input.final.awayScore);
+  }
   await commitDay(
     c,
     loaded.day,
     [
       stmt(
         db,
-        `INSERT INTO matches (id, match_day_id, seq, home_set_id, away_set_id, status, is_playoff, created_at, updated_at)
-         SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ? FROM matches WHERE match_day_id = ?`,
+        `INSERT INTO matches (id, match_day_id, seq, home_set_id, away_set_id, home_score, away_score, status, is_playoff, created_at, updated_at)
+         SELECT ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ? FROM matches WHERE match_day_id = ?`,
         id,
         loaded.day.id,
         input.homeSetId,
         input.awaySetId,
+        newMatch.homeScore,
+        newMatch.awayScore,
         status,
         input.isPlayoff ? 1 : 0,
         now,
         now,
         loaded.day.id,
       ),
+      ...goalStatements,
     ],
     {
       recompute: isCorrection ? state : undefined,
@@ -207,5 +234,35 @@ matchRoutes.post("/goals/:id/delete", requireAdmin, async (c) => {
     recompute: isCorrection ? state : undefined,
     audit: { action: action(isCorrection, "goal.delete"), entityType: "goal", entityId: goal.id, reason: input.reason, before: goal },
   });
+  return detail(c, loaded.day.id);
+});
+
+/** Name the scorer (and assister) of an unattributed goal, or mark it an own goal. The score doesn't change. */
+matchRoutes.post("/goals/:id/attribute", requireAdmin, async (c) => {
+  const input = await body(
+    c,
+    z.object({ kind: z.enum(["normal", "own_goal"]), scorerPlayerId: zId, assistPlayerId: zId.nullable().optional(), reason: zReason }),
+  );
+  const db = c.env.DB;
+  const goal = await first<{ id: string; match_id: string; set_id: string; kind: string }>(db, "SELECT id, match_id, set_id, kind FROM goal_events WHERE id = ?", c.req.param("id"));
+  if (!goal) throw new HttpError(404, "Goal not found.");
+  if (goal.kind !== "unattributed") throw new HttpError(409, "This goal already has a scorer. Remove it and add it again to change it.");
+  const match = await dayForMatch(db, goal.match_id);
+  const { loaded, isCorrection } = await editableDay(c, match.match_day_id, input.reason);
+  const state = toDayState(loaded);
+  const next = { setId: goal.set_id, kind: input.kind, scorerPlayerId: input.scorerPlayerId, assistPlayerId: input.kind === "normal" ? input.assistPlayerId ?? null : null };
+  const error = validateGoalEvent(next, { homeSetId: match.home_set_id, awaySetId: match.away_set_id }, state.roster);
+  if (error) throw new HttpError(422, error);
+  state.goals = state.goals.map((g) => (g.id === goal.id ? { ...g, ...next } : g));
+  await commitDay(
+    c,
+    loaded.day,
+    [stmt(db, "UPDATE goal_events SET kind = ?, scorer_player_id = ?, assist_player_id = ? WHERE id = ? AND kind = 'unattributed'", next.kind, next.scorerPlayerId, next.assistPlayerId, goal.id), guard(db)],
+    {
+      recompute: isCorrection ? state : undefined,
+      audit: { action: action(isCorrection, "goal.attribute"), entityType: "goal", entityId: goal.id, reason: input.reason, after: next },
+      conflictMessage: "That goal was already updated. Refresh and try again.",
+    },
+  );
   return detail(c, loaded.day.id);
 });

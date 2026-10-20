@@ -2,12 +2,23 @@ import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
 import { goalLabel, SetTable, WinnerBanner } from "../components/matchday";
-import { Badge, Button, Card, ConfirmDialog, cx, ErrorBox, GuestBadge, Loading, PageHeader, SetChip } from "../components/ui";
+import { Badge, Button, Card, CardIcon, ConfirmDialog, cx, ErrorBox, GuestBadge, Input, Loading, PageHeader, Segmented, SetChip, useToast } from "../components/ui";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { formatMoney } from "../../shared/rules";
+import { useMe } from "../hooks";
 import { formatDateLong } from "../format";
 import { useDayMutation, useMatchDay } from "../hooks";
 import type { Match, MatchDayDetail, TeamSet } from "../types";
 
-type GoalDraft = { matchId: string; setId: string; step: "scorer" | "assist"; kind: "normal" | "own_goal" | "unattributed"; scorerPlayerId: string | null };
+type GoalDraft = {
+  matchId: string;
+  setId: string;
+  step: "scorer" | "assist";
+  kind: "normal" | "own_goal" | "unattributed";
+  scorerPlayerId: string | null;
+  /** When set, the sheet names the scorer of this existing unattributed goal instead of adding a goal. */
+  attributeGoalId?: string;
+};
 
 export default function LiveResultsPage() {
   const { id } = useParams();
@@ -16,13 +27,19 @@ export default function LiveResultsPage() {
   // For finalized days every change needs a reason: queue the action until one is given.
   const [needsReason, setNeedsReason] = useState<null | { label: string; run: (reason: string) => void }>(null);
 
-  const createMatch = useDayMutation(id!, (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean; reason?: string }) =>
+  const createMatch = useDayMutation(id!, (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean; final?: { homeScore: number; awayScore: number }; reason?: string }) =>
     api.post(`/matchdays/${id}/matches`, { id: crypto.randomUUID(), ...v }),
+    "Result saved",
   );
   const updateMatch = useDayMutation(id!, (v: { matchId: string; reason?: string; homeScore?: number; awayScore?: number; status?: string }) => {
     const { matchId, ...rest } = v;
     return api.patch(`/matches/${matchId}`, rest);
   });
+  const attribute = useDayMutation(id!, (v: { goalId: string; kind: "normal" | "own_goal"; scorerPlayerId: string; assistPlayerId: string | null; reason?: string }) => {
+    const { goalId, ...rest } = v;
+    return api.post(`/goals/${goalId}/attribute`, rest);
+  }, "Scorer saved");
+  const start = useDayMutation(id!, () => api.post(`/matchdays/${id}/start`), "Play started — rosters are locked");
   const addGoal = useDayMutation(id!, (v: { matchId: string; setId: string; kind: string; scorerPlayerId: string | null; assistPlayerId: string | null; reason?: string }) => {
     const { matchId, ...rest } = v;
     return api.post(`/matches/${matchId}/goals`, { id: crypto.randomUUID(), ...rest });
@@ -39,18 +56,48 @@ export default function LiveResultsPage() {
   const guarded = (label: string, run: (reason?: string) => void) => (finalized ? setNeedsReason({ label, run }) : run());
 
   const submitGoal = (g: GoalDraft, assistPlayerId: string | null) => {
-    guarded("Add goal", (reason) => addGoal.mutate({ matchId: g.matchId, setId: g.setId, kind: g.kind, scorerPlayerId: g.scorerPlayerId, assistPlayerId, reason }));
+    if (g.attributeGoalId) {
+      const goalId = g.attributeGoalId;
+      if (g.kind !== "unattributed") guarded("Name scorer", (reason) => attribute.mutate({ goalId, kind: g.kind as "normal" | "own_goal", scorerPlayerId: g.scorerPlayerId!, assistPlayerId, reason }));
+    } else {
+      guarded("Add goal", (reason) => addGoal.mutate({ matchId: g.matchId, setId: g.setId, kind: g.kind, scorerPlayerId: g.scorerPlayerId, assistPlayerId, reason }));
+    }
     setGoal(null);
   };
+  const nameScorer = (matchId: string, goal: { id: string; setId: string }) => setGoal({ matchId, setId: goal.setId, step: "scorer", kind: "normal", scorerPlayerId: null, attributeGoalId: goal.id });
 
   return (
     <div className="space-y-5 pb-8">
       <PageHeader
         title={finalized ? "Correct results" : "Live results"}
         kicker={formatDateLong(d.day.date)}
-        action={<Link to={`/matchdays/${id}`} className="text-sm font-semibold text-pitch-700">← Day</Link>}
+        action={
+          <div className="flex items-center gap-3">
+            {d.day.status === "in_progress" && (
+              <Link to={`/matchdays/${id}/add-guest`}><Button size="sm" variant="secondary">+ Guest{d.guestSlots != null && ` (${d.guestSlots})`}</Button></Link>
+            )}
+            <Link to={`/matchdays/${id}`} className="text-sm font-semibold text-pitch-700">← Day</Link>
+          </div>
+        }
       />
-      {!editable && <ErrorBox error={new Error(d.day.status === "cancelled" ? "This day was cancelled." : "Start play from the match day page first.")} />}
+      {!editable && d.day.status === "cancelled" && <ErrorBox error={new Error("This day was cancelled.")} />}
+      {!editable && ["checkin_open", "locked"].includes(d.day.status) && (
+        <Card className="space-y-3 bg-chalk p-5">
+          <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Ready to play?</h2>
+          {d.sets.length === 0 ? (
+            <>
+              <p className="text-sm text-muted">Pick and publish teams first — results are recorded between teams.</p>
+              <Link to={`/matchdays/${id}/teams`}><Button>Pick teams</Button></Link>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted">Starting play locks the teams. Then record each match below.</p>
+              <Button size="lg" loading={start.isPending} onClick={() => start.mutate(undefined)}>Start play</Button>
+            </>
+          )}
+        </Card>
+      )}
+      {!editable && d.day.status === "draft" && <ErrorBox error={new Error("Open check-in and pick teams before recording results.")} />}
       {finalized && <div className="rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-900 ring-1 ring-amber-200">This day is finalized. Each change asks for a reason, is audited, and recalculates points.</div>}
 
       {editable && live && (
@@ -69,7 +116,7 @@ export default function LiveResultsPage() {
 
       {d.matches.some((m) => m.status !== "in_progress") && (
         <section className="space-y-2">
-          <h2 className="display text-2xl font-bold uppercase text-pitch-900">Matches</h2>
+          <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Matches</h2>
           {[...d.matches].reverse().filter((m) => m.status !== "in_progress").map((m) => (
             <PastMatch
               key={m.id}
@@ -86,14 +133,17 @@ export default function LiveResultsPage() {
               onStatus={(status) => guarded(status === "void" ? "Void match" : "Restore match", (reason) => updateMatch.mutate({ matchId: m.id, status, reason }))}
               onGoal={(setId) => setGoal({ matchId: m.id, setId, step: "scorer", kind: "normal", scorerPlayerId: null })}
               onDeleteGoal={(goalId) => guarded("Remove goal", (reason) => deleteGoal.mutate({ goalId, reason }))}
+              onNameScorer={(g) => nameScorer(m.id, g)}
             />
           ))}
         </section>
       )}
 
+      {editable && <CardsSection detail={d} liveMatchId={live?.id ?? null} />}
+
       {d.sets.length > 0 && (
         <section className="space-y-3">
-          <h2 className="display text-2xl font-bold uppercase text-pitch-900">Standings today</h2>
+          <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Standings today</h2>
           <WinnerBanner detail={d} />
           <SetTable detail={d} />
           {d.day.status === "in_progress" && (
@@ -139,7 +189,7 @@ function Scoreboard({ detail, match, onGoal, onFullTime, onVoid, onDeleteGoal, b
   const [confirmVoid, setConfirmVoid] = useState(false);
   return (
     <Card className="overflow-hidden">
-      <div className="flex items-center justify-between bg-pitch-900 px-4 py-2 text-white">
+      <div className="flex items-center justify-between border-b border-line px-5 py-3">
         <span className="text-sm font-semibold">Match #{match.seq}</span>
         <span className="flex items-center gap-2">
           {match.isPlayoff && <Badge tone="gold">Playoff</Badge>}
@@ -148,9 +198,10 @@ function Scoreboard({ detail, match, onGoal, onFullTime, onVoid, onDeleteGoal, b
       </div>
       <div className="grid grid-cols-2">
         {[home, away].map((s, i) => (
-          <div key={s.id} className={cx("flex flex-col items-center gap-3 p-4", i === 0 && "border-r border-line")} style={{ borderTop: `6px solid ${s.color}` }}>
-            <div className="display text-xl font-bold uppercase">{s.name}</div>
-            <div className="num display text-7xl font-bold leading-none">{i === 0 ? match.homeScore : match.awayScore}</div>
+          <div key={s.id} className={cx("flex flex-col items-center gap-3 p-5", i === 0 && "border-r border-line")}>
+            <span className="h-1.5 w-12 rounded-full" style={{ background: s.color === "#f8fafc" ? "#d6d6d0" : s.color }} aria-hidden />
+            <div className="text-xl font-medium tracking-[-0.02em]">{s.name}</div>
+            <div className="num stat text-[96px] leading-none">{i === 0 ? match.homeScore : match.awayScore}</div>
             <Button size="lg" className="w-full" disabled={busy} onClick={() => onGoal(s.id)}>
               + Goal
             </Button>
@@ -185,41 +236,72 @@ function Scoreboard({ detail, match, onGoal, onFullTime, onVoid, onDeleteGoal, b
   );
 }
 
-function NewMatch({ detail, onCreate, busy }: { detail: MatchDayDetail; onCreate: (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean }) => void; busy: boolean }) {
+function NewMatch({ detail, onCreate, busy }: { detail: MatchDayDetail; onCreate: (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean; final?: { homeScore: number; awayScore: number } }) => void; busy: boolean }) {
+  const [mode, setMode] = useState<"final" | "live">("final");
   const [picked, setPicked] = useState<string[]>([]);
   const [isPlayoff, setIsPlayoff] = useState(false);
+  const [score, setScore] = useState<[number, number]>([0, 0]);
   const toggle = (sid: string) => setPicked((p) => (p.includes(sid) ? p.filter((x) => x !== sid) : p.length < 2 ? [...p, sid] : [p[1]!, sid]));
+  const setById = new Map(detail.sets.map((s) => [s.id, s]));
+  const save = () => {
+    onCreate({ homeSetId: picked[0]!, awaySetId: picked[1]!, isPlayoff, ...(mode === "final" ? { final: { homeScore: score[0], awayScore: score[1] } } : {}) });
+    setPicked([]);
+    setScore([0, 0]);
+  };
   return (
-    <Card className="p-4">
-      <h2 className="display text-2xl font-bold uppercase text-pitch-900">{detail.matches.length ? "Next match" : "First match"}</h2>
-      <p className="text-sm text-muted">Tap the two sets that are playing.</p>
-      <div className="mt-3 grid grid-cols-2 gap-2">
+    <Card className="space-y-4 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">{detail.matches.length ? "Record next match" : "Record a match"}</h2>
+        <Segmented label="How to record" value={mode} onChange={setMode} options={[{ value: "final", label: "Final score" }, { value: "live", label: "Live, goal by goal" }]} />
+      </div>
+      <p className="text-sm text-muted">
+        {mode === "final" ? "Pick the two teams and enter the final score. You can name the scorers afterwards." : "Pick the two teams and kick off; tap + Goal as goals go in."}
+      </p>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
         {detail.sets.map((s) => (
           <button
             key={s.id}
             onClick={() => toggle(s.id)}
             aria-pressed={picked.includes(s.id)}
-            className={cx("flex min-h-14 items-center gap-2 rounded-xl border-2 px-3 text-left font-semibold", picked.includes(s.id) ? "border-pitch-600 bg-pitch-50" : "border-line bg-white")}
+            className={cx("flex min-h-14 items-center gap-2 rounded-2xl border-2 px-3 text-left", picked.includes(s.id) ? "border-pitch-700 bg-pitch-50" : "border-line bg-white")}
           >
-            <SetChip name={s.name} color={s.color} />
+            <SetChip name={s.name} color={s.color} className="font-medium" />
             <span className="ml-auto num text-xs text-muted">{s.record?.wins ?? 0}W</span>
           </button>
         ))}
       </div>
+      {mode === "final" && picked.length === 2 && (
+        <div className="grid grid-cols-2 gap-3">
+          {[0, 1].map((side) => {
+            const set = setById.get(picked[side]!)!;
+            return (
+              <div key={side} className="flex flex-col items-center gap-2 rounded-[22px] border border-line bg-chalk p-4">
+                <SetChip name={set.name} color={set.color} />
+                <div className="flex items-center gap-4">
+                  <Button variant="secondary" aria-label={`Lower ${set.name} score`} onClick={() => setScore((sc) => (side === 0 ? [Math.max(0, sc[0] - 1), sc[1]] : [sc[0], Math.max(0, sc[1] - 1)]))}>−</Button>
+                  <span className="num stat w-16 text-center text-[64px]">{score[side]}</span>
+                  <Button variant="secondary" aria-label={`Raise ${set.name} score`} onClick={() => setScore((sc) => (side === 0 ? [sc[0] + 1, sc[1]] : [sc[0], sc[1] + 1]))}>+</Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
       {detail.day.tiePolicy === "playoff" && (
-        <label className="mt-3 flex min-h-11 items-center gap-2 text-sm font-medium">
+        <label className="flex min-h-11 items-center gap-2 text-sm">
           <input type="checkbox" className="size-5 accent-pitch-700" checked={isPlayoff} onChange={(e) => setIsPlayoff(e.target.checked)} />
           This is a playoff match (decides a tie on wins)
         </label>
       )}
-      <Button size="lg" className="mt-3 w-full" disabled={picked.length !== 2} loading={busy} onClick={() => onCreate({ homeSetId: picked[0]!, awaySetId: picked[1]!, isPlayoff })}>
-        Kick off
+      <Button size="lg" className="w-full" disabled={picked.length !== 2} loading={busy} onClick={save}>
+        {mode === "final" ? (picked.length === 2 ? `Save result ${score[0]}–${score[1]}` : "Save result") : "Kick off"}
       </Button>
     </Card>
   );
 }
 
-function PastMatch({ detail, match, home, away, editable, onScore, onStatus, onGoal, onDeleteGoal }: {
+function PastMatch({ detail, match, home, away, editable, onScore, onStatus, onGoal, onDeleteGoal, onNameScorer }: {
+  onNameScorer: (g: { id: string; setId: string }) => void;
   detail: MatchDayDetail;
   match: Match;
   home: TeamSet;
@@ -252,6 +334,9 @@ function PastMatch({ detail, match, home, away, editable, onScore, onStatus, onG
                 <li key={g.id} className="flex min-h-10 items-center gap-2">
                   <span className="size-2.5 rounded-full" style={{ background: detail.sets.find((s) => s.id === g.setId)?.color }} />
                   <span className="flex-1">{goalLabel(detail, g)}</span>
+                  {editable && g.kind === "unattributed" && (
+                    <button className="rounded-full border border-pitch-700/40 px-3 py-1 text-xs font-medium text-pitch-800 hover:border-pitch-700" onClick={() => onNameScorer(g)}>Who scored?</button>
+                  )}
                   {editable && <button className="rounded-md px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50" onClick={() => onDeleteGoal(g.id)}>Remove</button>}
                 </li>
               ))}
@@ -307,7 +392,7 @@ function GoalSheet({ detail, draft, onChange, onSubmit, onClose }: { detail: Mat
     <div className="fixed inset-0 z-50 flex items-end bg-black/40 sm:items-center sm:justify-center" role="dialog" aria-modal="true" aria-label="Record goal">
       <div className="max-h-[88dvh] w-full overflow-y-auto rounded-t-3xl bg-chalk p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:max-w-lg sm:rounded-3xl">
         <div className="mb-3 flex items-center justify-between">
-          <h3 className="display text-2xl font-bold uppercase">
+          <h3 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">
             Goal · <SetChip name={credited.name} color={credited.color} />
           </h3>
           <button onClick={onClose} className="min-h-11 rounded-lg px-3 font-semibold text-muted">Cancel</button>
@@ -338,5 +423,85 @@ function GoalSheet({ detail, draft, onChange, onSubmit, onClose }: { detail: Mat
         )}
       </div>
     </div>
+  );
+}
+
+function CardsSection({ detail, liveMatchId }: { detail: MatchDayDetail; liveMatchId: string | null }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const { data: me } = useMe();
+  const [open, setOpen] = useState(false);
+  const [color, setColor] = useState<"yellow" | "red">("yellow");
+  const [reason, setReason] = useState("");
+  const [voiding, setVoiding] = useState<string | null>(null);
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ["matchday", detail.day.id] });
+    qc.invalidateQueries({ queryKey: ["admin-fines"] });
+  };
+  const give = useMutation({
+    mutationFn: (playerId: string) => api.post(`/matchdays/${detail.day.id}/cards`, { id: crypto.randomUUID(), playerId, color, matchId: liveMatchId, reason: reason || undefined }),
+    onSuccess: (r: { card: { fineAmount: number; displayName?: string } }) => {
+      refresh();
+      setOpen(false);
+      setReason("");
+      toast(`${color === "yellow" ? "Yellow" : "Red"} card given · fine ${formatMoney(r.card.fineAmount, me?.currency ?? "NGN")}`);
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const voidCard = useMutation({
+    mutationFn: (v: { id: string; reason: string }) => api.post(`/cards/${v.id}/void`, { reason: v.reason }),
+    onSuccess: refresh,
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const players = detail.sets.flatMap((s) => s.players.map((p) => ({ ...p, set: s }))).filter((p) => p.attended !== false);
+  const cards = detail.cards.filter((k) => !k.voided);
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Cards</h2>
+        <div className="flex gap-2">
+          <Button size="sm" className="!bg-yellow-400 !text-ink" onClick={() => { setColor("yellow"); setOpen(true); }}>+ Yellow</Button>
+          <Button size="sm" className="!bg-red-600" onClick={() => { setColor("red"); setOpen(true); }}>+ Red</Button>
+        </div>
+      </div>
+      {cards.length === 0 ? <p className="text-sm text-muted">No cards today.</p> : (
+        <Card>
+          <ul className="divide-y divide-line">
+            {cards.map((k) => (
+              <li key={k.id} className="flex min-h-11 items-center gap-2 px-4 text-sm">
+                <CardIcon color={k.color} />
+                <span className="flex-1">{k.displayName}{k.reason && <span className="text-muted"> · {k.reason}</span>}</span>
+                {k.fineAmount != null && <span className="num text-muted">{formatMoney(k.fineAmount, me?.currency ?? "NGN")}</span>}
+                <button className="rounded-md px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50" onClick={() => setVoiding(k.id)}>Void</button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end bg-black/40 sm:items-center sm:justify-center" role="dialog" aria-modal="true" aria-label={`Give ${color} card`}>
+          <div className="max-h-[88dvh] w-full overflow-y-auto rounded-t-3xl bg-chalk p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:max-w-lg sm:rounded-3xl">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="flex items-center gap-2 text-[26px] font-medium tracking-[-0.025em]"><CardIcon color={color} className="!h-6 !w-4" /> {color} card</h3>
+              <button onClick={() => setOpen(false)} className="min-h-11 rounded-lg px-3 font-semibold text-muted">Cancel</button>
+            </div>
+            <Input placeholder="Reason (optional), e.g. Dissent" value={reason} onChange={(e) => setReason(e.target.value)} maxLength={200} className="mb-3" />
+            <div className="mb-2 text-sm font-semibold text-muted">Who?</div>
+            <div className="grid grid-cols-2 gap-2">
+              {players.map((p) => (
+                <button key={p.playerId} disabled={give.isPending} onClick={() => give.mutate(p.playerId)} className="flex min-h-14 items-center gap-2 rounded-xl border border-line bg-white px-3 text-left font-semibold active:bg-pitch-50">
+                  <span className="size-2.5 shrink-0 rounded-full" style={{ background: p.set.color }} />
+                  <span className="truncate">{p.displayName}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <ConfirmDialog open={!!voiding} title="Void this card?" requireReason tone="danger" confirmLabel="Void card" onClose={() => setVoiding(null)}
+        onConfirm={(r) => voidCard.mutate({ id: voiding!, reason: r }, { onSettled: () => setVoiding(null) })}>
+        Removes the card and cancels its fine. Recorded in the audit log.
+      </ConfirmDialog>
+    </section>
   );
 }

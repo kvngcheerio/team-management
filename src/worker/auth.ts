@@ -15,7 +15,7 @@ export function createAuth(env: Bindings, requestUrl: string) {
     basePath: "/api/auth",
     secret: env.BETTER_AUTH_SECRET,
     database: env.DB,
-    trustedOrigins: [baseURL],
+    trustedOrigins: allowedOrigins(env, baseURL),
     emailAndPassword: {
       enabled: true,
       minPasswordLength: 10,
@@ -47,3 +47,20 @@ export function createAuth(env: Bindings, requestUrl: string) {
 }
 
 export type Auth = ReturnType<typeof createAuth>;
+
+/** The main origin plus any extra ones (custom domain + workers.dev, for example). */
+export function allowedOrigins(env: Bindings, baseURL: string): string[] {
+  const extra = (env.APP_ORIGINS ?? "")
+    .split(",")
+    .map((o) => o.trim())
+    .filter(Boolean)
+    .map((o) => {
+      try {
+        return new URL(o).origin;
+      } catch {
+        return null;
+      }
+    })
+    .filter((o): o is string => Boolean(o));
+  return [...new Set([new URL(baseURL).origin, ...extra])];
+}

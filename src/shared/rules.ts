@@ -32,8 +32,14 @@ export const RULES_SUMMARY = [
   "League table order: points, then daily wins, then goals, then assists. Players level on all four share the position.",
   "Seasons run six calendar months between explicit start and end dates (timezone Africa/Lagos by default).",
   "Only finalized match days count. Cancelled match days award nothing.",
-  "Rosters lock when the first match starts: no team switches after that.",
+  "Rosters lock when the first match starts: no team switches after that. Late guests can still be added on the pitch into a team with a free spot (teams are 5-a-side by default).",
   "Admins can correct finalized days; every correction is audited and standings are recalculated from records, so points can never be awarded twice.",
+  "The team sheet is visible to players from 07:50 WAT on match day (or once play starts).",
+  "Cards carry fines (default ₦2,000 yellow, ₦5,000 red), fixed when the card is given. Cards don't affect league points.",
+  "Weekly MVP: voting opens when a match day is finalized and runs 48 hours. Players who attended vote for anyone who played (not themselves). Most votes wins; ties share it.",
+  "Signing up makes you a guest. Guests pay ₦5,000 per match day to play; after paying for 5 match days in a season, the rest of that season is free. Paying the membership fee (default ₦100,000 every 6 months) makes you a member.",
+  "Invite friends with your personal link: when someone you invited makes their first payment, you get ₦500 wallet credit, usable on membership renewal or card fines.",
+  "Season MVP: an admin opens the vote. Approved members vote for anyone who played that season. Results show when voting closes.",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -619,4 +625,163 @@ export const SET_COLORS = ["#dc2626", "#2563eb", "#f8fafc", "#111827", "#facc15"
 
 function label(m: MatchResult) {
   return m.seq != null ? `#${m.seq}` : m.id.slice(0, 6);
+}
+
+// ---------------------------------------------------------------------------
+// Team-sheet reveal, availability and disciplinary fines
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_TEAM_SHEET_TIME = "07:50";
+
+/**
+ * Players see the team sheet from the reveal time on match day (default 07:50 local),
+ * or as soon as play has started. Admins always see it.
+ */
+export function teamSheetVisible(status: MatchDayStatus, teamSheetAtIso: string | null, now: Date, isAdmin: boolean): boolean {
+  if (isAdmin) return true;
+  if (status === "in_progress" || status === "finalized") return true;
+  if (!teamSheetAtIso) return true;
+  return now.getTime() >= Date.parse(teamSheetAtIso);
+}
+
+export type CardColor = "yellow" | "red";
+export const DEFAULT_FINES: Record<CardColor, number> = { yellow: 2000, red: 5000 };
+
+/** Fine for a card, fixed at the moment the card is given (later price changes don't apply retroactively). */
+export function fineFor(color: CardColor, fines: Record<CardColor, number>): number {
+  const amount = fines[color];
+  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount) : DEFAULT_FINES[color];
+}
+
+export function formatMoney(amount: number, currency = "NGN"): string {
+  try {
+    return new Intl.NumberFormat("en-NG", { style: "currency", currency, maximumFractionDigits: 0 }).format(amount);
+  } catch {
+    return `${currency} ${amount.toLocaleString()}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MVP voting
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_MVP_VOTE_HOURS = 48;
+
+export function pollOpen(poll: { opensAt: string; closesAt: string; closedEarlyAt: string | null }, now: Date): boolean {
+  const t = now.getTime();
+  return !poll.closedEarlyAt && t >= Date.parse(poll.opensAt) && t < Date.parse(poll.closesAt);
+}
+
+/** Most votes wins; a tie means a shared MVP. No votes means no MVP. */
+export function tallyVotes(votes: { candidatePlayerId: string }[]) {
+  const counts = new Map<string, number>();
+  for (const v of votes) counts.set(v.candidatePlayerId, (counts.get(v.candidatePlayerId) ?? 0) + 1);
+  const ranked = [...counts.entries()].map(([playerId, votes]) => ({ playerId, votes })).sort((a, b) => b.votes - a.votes);
+  const top = ranked[0]?.votes ?? 0;
+  return { ranked, winners: top > 0 ? ranked.filter((r) => r.votes === top).map((r) => r.playerId) : [], total: votes.length };
+}
+
+/** Returns an error message or null. Voters must be eligible, candidates eligible, and no self-votes. */
+export function validateVote(voterId: string, candidateId: string, voters: Set<string>, candidates: Set<string>): string | null {
+  if (!voters.has(voterId)) return "You're not eligible to vote in this poll.";
+  if (voterId === candidateId) return "You can't vote for yourself.";
+  if (!candidates.has(candidateId)) return "That player isn't a candidate in this poll.";
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Late (on-pitch) guests
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_TEAM_SIZE = 5;
+
+export interface SetFill {
+  setId: string;
+  idx: number;
+  size: number;
+  totalRating: number;
+}
+
+/**
+ * Pick the set a late guest joins: the one with the fewest players that still has room under the
+ * team size; ties go to the lower total rating, then the lower set number. Null when every set is full.
+ */
+export function chooseSetForLateGuest(sets: SetFill[], teamSize: number): SetFill | null {
+  const open = sets.filter((s) => s.size < teamSize);
+  if (open.length === 0) return null;
+  return [...open].sort((a, b) => a.size - b.size || a.totalRating - b.totalRating || a.idx - b.idx)[0]!;
+}
+
+/**
+ * How many more guests can be added: free spots across all sets (team size minus players),
+ * further limited by the match day's capacity.
+ */
+export function guestSlotsLeft(sets: SetFill[], teamSize: number, capacity: number, confirmed: number): number {
+  const teamSpots = sets.reduce((n, s) => n + Math.max(0, teamSize - s.size), 0);
+  return Math.max(0, Math.min(teamSpots, capacity - confirmed));
+}
+
+// ---------------------------------------------------------------------------
+// Paid access: guest fees, membership, wallet
+// ---------------------------------------------------------------------------
+
+export const DEFAULT_ACCESS = { membershipFee: 100_000, membershipMonths: 6, guestFee: 5_000, guestFreeAfter: 5, referralCredit: 500 };
+
+/**
+ * Guest fee for a match day. A guest pays per match day until they've paid for `freeAfter` match days
+ * in the season; after that, the rest of the season is free.
+ */
+export function guestFeeFor(paidDaysThisSeason: number, guestFee: number, freeAfter: number): { amount: number; free: boolean } {
+  if (guestFee <= 0) return { amount: 0, free: true };
+  if (freeAfter > 0 && paidDaysThisSeason >= freeAfter) return { amount: 0, free: true };
+  return { amount: guestFee, free: false };
+}
+
+/** Wallet credit is applied first (when chosen); the rest is paid externally. */
+export function applyWallet(total: number, walletBalance: number, useWallet: boolean): { wallet: number; external: number } {
+  const wallet = useWallet ? Math.max(0, Math.min(total, walletBalance)) : 0;
+  return { wallet, external: total - wallet };
+}
+
+/**
+ * The membership period a payment buys: starts the day after the current paid-until (if still current),
+ * otherwise today, and runs for `months` calendar months (inclusive end).
+ */
+export function nextMembershipPeriod(paidUntil: string | null, today: string, months: number): { start: string; end: string } {
+  const start = paidUntil && paidUntil >= today ? addDays(paidUntil, 1) : today;
+  return { start, end: addDays(addMonthsClamped(start, months), -1) };
+}
+
+export type RenewalStatus = "not_member" | "current" | "due_soon" | "overdue";
+
+/** Membership never lapses (members stay members); this only drives reminders. */
+export function renewalStatus(kind: "member" | "guest", paidUntil: string | null, today: string, warnDays = 30): RenewalStatus {
+  if (kind !== "member") return "not_member";
+  if (!paidUntil || paidUntil < today) return "overdue";
+  return paidUntil <= addDays(today, warnDays) ? "due_soon" : "current";
+}
+
+// ---------------------------------------------------------------------------
+// Weekly schedule
+// ---------------------------------------------------------------------------
+
+/** ISO weekday (1 = Monday … 7 = Sunday) of a YYYY-MM-DD date. */
+export function isoWeekday(date: string): number {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  const dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return dow === 0 ? 7 : dow;
+}
+
+export function parseWeekdays(value: string): number[] {
+  return [...new Set(value.split(",").map((v) => Number(v.trim())).filter((n) => Number.isInteger(n) && n >= 1 && n <= 7))].sort();
+}
+
+/** Dates from `from` (inclusive) for `days` days that fall on the scheduled weekdays. */
+export function scheduledDates(from: string, days: number, weekdays: number[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < days; i++) {
+    const d = addDays(from, i);
+    if (weekdays.includes(isoWeekday(d))) out.push(d);
+  }
+  return out;
 }

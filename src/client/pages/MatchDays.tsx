@@ -42,39 +42,41 @@ export default function MatchDaysPage() {
 
 function DayList({ title, days, isAdmin }: { title: string; days: MatchDaySummary[]; isAdmin: boolean }) {
   return (
-    <section>
-      <h2 className="display mb-3 text-2xl font-bold uppercase text-pitch-900">{title}</h2>
-      <ul className="space-y-2">
-        {days.map((d) => (
-          <li key={d.id}>
-            <Link to={`/matchdays/${d.id}`}>
-              <Card className="flex items-center gap-4 px-4 py-3 hover:border-pitch-300">
-                <div className="w-16 shrink-0 text-center">
-                  <div className="text-xs font-semibold uppercase text-muted">{formatDate(d.date, { weekday: "short" })}</div>
-                  <div className="display text-3xl font-bold leading-none">{formatDate(d.date, { day: "numeric" })}</div>
-                  <div className="text-xs font-semibold uppercase text-muted">{formatDate(d.date, { month: "short" })}</div>
+    <section className="space-y-3">
+      <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">{title}</h2>
+      <Card>
+        <ul className="divide-y divide-line">
+          {days.map((d) => (
+            <li key={d.id}>
+              <Link to={`/matchdays/${d.id}`} className="flex items-center gap-5 px-5 py-4 transition hover:bg-chalk">
+                <div className="w-14 shrink-0">
+                  <div className="stat text-[44px] leading-none">{formatDate(d.date, { day: "numeric" })}</div>
+                  <div className="text-sm text-muted">{formatDate(d.date, { month: "short" })} · {formatDate(d.date, { weekday: "short" })}</div>
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <StatusBadge status={d.status} />
-                    {d.myStatus && d.myStatus !== "withdrawn" && <Badge tone={d.myStatus === "confirmed" ? "green" : "amber"}>{REG_LABEL[d.myStatus]}</Badge>}
+                    {isAdmin && d.status === "in_progress" && <Badge tone="blue">Live · record results</Badge>}
+                    {d.myStatus && d.myStatus !== "withdrawn" && <Badge tone={d.myStatus === "confirmed" ? "green" : "amber"}>{d.myStatus === "confirmed" && d.status === "finalized" ? "Played" : REG_LABEL[d.myStatus]}</Badge>}
                     {isAdmin && (d.pending ?? 0) > 0 && <Badge tone="amber">{d.pending} pending</Badge>}
                   </div>
-                  <div className="mt-1 truncate text-sm text-muted">
-                    {d.kickoffTime} {d.venue && `· ${d.venue}`}
+                  <div className="mt-1.5 truncate text-[15px] text-ink">
+                    {d.kickoffTime}
+                    {d.venue && <span className="text-muted"> · {d.venue}</span>}
                   </div>
                 </div>
-                <div className="num text-right text-sm">
-                  <div className="font-bold">
-                    {d.confirmed}/{d.capacity}
+                <div className="num text-right">
+                  <div className="text-2xl font-light tracking-tight">
+                    {d.confirmed}
+                    <span className="text-muted">/{d.capacity}</span>
                   </div>
-                  {d.waitlist > 0 && <div className="text-xs text-muted">+{d.waitlist} waiting</div>}
+                  <div className="text-xs text-muted">{d.waitlist > 0 ? `+${d.waitlist} waiting` : "playing"}</div>
                 </div>
-              </Card>
-            </Link>
-          </li>
-        ))}
-      </ul>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </Card>
     </section>
   );
 }

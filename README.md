@@ -1,4 +1,4 @@
-# Matchday
+# Matchday (Team Alpha)
 
 A mobile-first web app for a small football group: player registration, guests, match-day check-in with a waiting list, balanced team selection, live result entry with goals and assists, and a six-month individual league.
 
@@ -30,7 +30,7 @@ All rules live in **`src/shared/rules.ts`** and are covered by `test/rules.test.
 - **Own goals** count for the team that benefits. They don't add to the player's scored goals, but they are tracked separately. **Unattributed goals** are allowed so that scores always reconcile.
 - **Seasons** last six calendar months, with explicit start and end dates. The default end date is the day before the same day-of-month six months later, clamped to the end of the month: 1 Jan → 30 Jun, 15 Jul → 14 Jan. Dates are interpreted in the season's timezone (default **Africa/Lagos**).
 - Only **finalized** match days count. **Cancelled** days award nothing, including a finalized day that is later cancelled.
-- **Rosters lock when play starts.** Teams can't be switched after that.
+- **Rosters lock when play starts.** Players can't switch teams after that, but late guests can be added into a team with a free spot.
 - **Corrections** to a finalized day need a reason. Each one is written to the audit log with the actor, time, reason and before/after values, and that day's records are recomputed from scratch.
 
 ### How correctness is enforced
@@ -40,6 +40,39 @@ All rules live in **`src/shared/rules.ts`** and are covered by `test/rules.test.
 - **Capacity** is enforced inside a single `INSERT … SELECT CASE WHEN count < capacity THEN 'confirmed' ELSE 'waitlist' END … ON CONFLICT` statement. D1 runs each statement atomically, so concurrent check-ins can't overbook the day, and `UNIQUE (match_day_id, player_id)` blocks duplicate registrations.
 - Goals and matches accept a client-generated UUID, so a retried request is idempotent.
 - The server recomputes everything. It never trusts points, roles or totals sent by the client.
+
+### Membership, guest fees, wallet and invites
+
+- **Signing up makes you a guest.** Anyone joining through the shared signup link or a teammate's invite link starts as a guest. There's no approval step: payment unlocks play.
+- **Guest fee:** **₦5,000 per match day** (admin-set). A guest's place is confirmed only once that day's fee is paid, online (test mode for now) or marked paid in cash by an admin. Once a guest has **paid for 5 match days in a season**, the rest of that season is free; the count resets each season and the number is admin-set. Admins can also let someone play with the fee still owed, or waive it with a reason.
+- **Membership:** **₦100,000 every 6 months** (admin-set). Paying online, or an admin recording a cash payment, makes a guest a **member**. Renewals extend from the current paid-until date. Membership **never lapses**: members whose renewal is due just see a reminder banner. Members who existed before this change were grandfathered as paid for 6 months.
+- **Invites and wallet:** every player has a personal link (`/r/<code>`, under **Me → Invite friends**). When an invited person makes their **first payment** (guest fee or membership), the inviter gets **₦500** wallet credit, once per invitee. Wallet credit can be spent on **membership renewal** or **card fines**, not guest fees. The wallet is an append-only ledger guarded so it can never go negative, and admins can adjust it with a note.
+- **Finance** counts cash income (membership, guest fees, fines, other income) and lists wallet-covered amounts separately, since they're credit rather than new money.
+- **Paying (until Paystack):** checkout shows the group's bank details (**GTBank · 0160720733 · Onyekachi Edmond**, editable under Admin → Settings) with a reference for the transfer narration. The player taps **I've made the transfer**, and an admin confirms or rejects it under **Admin → Finance → Transfers to confirm**. Confirming applies the payment atomically and pays any invite reward. Setting **How players pay** to *Test mode* swaps transfers for a simulator. Every payment type goes through one flow in `src/worker/routes/payments.ts`, so Paystack can replace the transfer step later.
+
+### Recording results
+
+Once teams are published, admins tap **Record results** (on the dashboard, the match day page, or the match day's Results tab). If play hasn't started, the results screen offers **Start play**, which locks the teams. Each match can be recorded two ways:
+- **Final score:** pick the two teams, set the score with +/−, and save. Goals are stored as unattributed so the score always reconciles; tap **Who scored?** on any goal later to name the scorer and assister, or mark it an own goal.
+- **Live, goal by goal:** kick off, tap **+ Goal**, pick the scorer and assister, then **Full time**.
+
+Scores can be adjusted, matches voided, and cards given from the same screen. Once everything reconciles, **Finalize** on the match day page awards the points.
+
+### Weekly schedule and cancellations
+
+- **Admin → Schedule:** tick the weekdays you play and set kickoff, when check-in opens (days before), when it closes (hours before kickoff), and how many weeks ahead to create. A **daily Cloudflare cron at 06:00 WAT** (`triggers.crons` in `wrangler.jsonc`) creates those match days inside the active season and opens check-in on time. **Save & create upcoming days now** does the same immediately. It's idempotent: an existing or cancelled date is never recreated. Venue, capacity, sets and team size come from Settings.
+- **Cancelling a day** requires a reason. Players see it on the match day and the home screen, and it's posted as a pinned announcement in the same write. Cancelled days award no points. Guest fees already paid for a cancelled day are **not** refunded automatically; the dialog warns you when that applies.
+
+### Fines, team sheet and MVP votes
+
+- **Cards and fines:** admins give yellow or red cards from the live results screen. Each card carries a fine (default **₦2,000 yellow, ₦5,000 red**, set under Admin → Settings) that's fixed when the card is given. Cards appear in stats and don't affect league points. Admins can mark a fine paid in cash, waive it, or void the card. Each of those actions is audited.
+- **Paying fines:** players pay from **Me**. The checkout is a **test-mode simulator** (`provider = 'dummy'`) with no card fields. It follows a real provider's flow: create a pending payment with a server-computed amount → confirm → mark all fines paid in one transaction, refusing if any fine changed in the meantime. To go live, replace `POST /api/payments/:id/simulate` with a verified webhook from Paystack or Flutterwave.
+- **Team sheet:** players see teams from **07:50 WAT on match day** (configurable globally and per match day), or as soon as play starts. The server enforces this; admins always see the teams.
+- **Guests on the pitch:** once teams are published (including after kickoff), an admin can add a new or returning guest from **+ Guest on pitch**. The guest is marked present and placed in the team with the fewest players that still has room (teams are **5-a-side** by default), with ties going to the weaker team. Nobody else changes team. The page shows the **guest limit**: free spots across all teams, capped by the day's capacity. Adding is blocked once every team has 5. Late guests can score and assist but never earn league points.
+- **Availability:** players tap *I'm available* or *Can't make it*. Admins see who said no and who hasn't responded.
+- **Weekly MVP:** opens automatically when a match day is finalized and runs for 48 hours. Players who attended vote for anyone who played, but not themselves. Votes can be changed while voting is open. Results are hidden until it closes, and ties share the award.
+- **Season MVP:** an admin opens it from the Stats page (7 days). Approved members vote for anyone who played that season.
+- **Finance (admin):** all fine payments (online and cash), plus expenditures and other income that admins record. Shows totals, balance, spending by category and a date filter. Entries are voided with a reason, never deleted.
 
 ---
 
@@ -51,7 +84,8 @@ All rules live in **`src/shared/rules.ts`** and are covered by `test/rules.test.
 | **Member** | Sign in, check in or withdraw before the deadline, and view teams, results, standings and profiles. |
 | **Guest** | Request a place through a match day's shareable link (`/g/<token>`). An admin must approve the request before the guest joins the playing pool. |
 
-- **Public sign-up is disabled.** Accounts are created in exactly two ways: first-admin setup (which needs the `SETUP_TOKEN` secret), or a player's personal **invite link** generated by an admin. An invite links the new login to the existing player record, so history is never duplicated.
+- **Accounts:** players join through the **shared signup link** (Admin → Logins; it can be reset or turned off) or a teammate's **personal invite link**, and start as guests (see above). Accounts can also come from first-admin setup (needs `SETUP_TOKEN`), a player's personal **invite link**, or a single-use **admin invite** link (valid 7 days) that creates a new admin. Generic auth sign-up endpoints are blocked.
+- **Profile photos:** resized in the browser to 256px JPEG, checked by file type and magic bytes on the server (≤ 200 KB), stored in D1, and served only to signed-in users.
 - The `role` field can't be set by clients (`input: false`). Only admins can promote another user, and the last admin can't be demoted.
 - Guest contact details, skill ratings and goalkeeper preferences are returned only to admins.
 - Request protection: SameSite=Lax httpOnly cookies, `Secure` on HTTPS, an Origin check on every state-changing request, and JSON-only bodies. CSP and other security headers come from `public/_headers`.
@@ -98,7 +132,7 @@ This **wipes the local database** and loads sample players, a season, two finali
 
 ### Tests
 
-`npm test` runs 67 tests:
+`npm test` runs 129 tests, including `test/results.test.ts` (final-score entry, naming scorers afterwards), including `test/schedule.test.ts` (weekly schedule, cron handler, cancellation notice), including `test/bank-transfer.test.ts` (submit → admin confirm/reject, concurrent confirms), including `test/access-payments.test.ts` (referral credit once, guest fee then free after 5, membership with wallet, wallet never negative, concurrent wallet double-spend), including `test/pitch-guests.test.ts` (on-pitch guests),, including `test/features.test.ts` (signup link and approval, admin invites, photos, availability, team-sheet reveal, cards, fines, dummy payments including concurrent double-pay, finance, announcements) and `test/mvp.test.ts` (weekly and season votes):
 
 - `test/rules.test.ts`: most-wins winner, both tie policies, exactly 3 points once per eligible player, absent players and guests excluded, own goals, goal validation and reconciliation, finalization blockers, standings tie-breaks, six-month season boundaries (including leap years), balanced and random team selection without duplicates, and timezone conversion.
 - `test/flow.e2e.test.ts`: the full flow through the real Worker, auth sessions and D1. Create season → create match day → member check-in → guest approval → generate and publish teams → confirm attendance → record matches and goals → finalize (including two concurrent finalize requests) → verify standings. It then applies audited corrections and checks the recalculated standings, converts the guest, and closes the season.
@@ -152,6 +186,7 @@ You need a Cloudflare account. Everything used here fits the Workers Free plan f
 | `BETTER_AUTH_SECRET` | secret | `wrangler secret put` | Signs session cookies (≥ 32 chars) |
 | `BETTER_AUTH_URL` | secret or var | `wrangler secret put` | Public origin (used for auth and invite links) |
 | `SETUP_TOKEN` | secret | `wrangler secret put` | One-time first-admin setup; delete after use |
+| `APP_ORIGINS` | var | `wrangler.jsonc` | Extra origins allowed to sign in (comma-separated), e.g. the workers.dev URL when a custom domain is primary |
 
 `.dev.vars.example` lists the same values for local development. The timezone, group name and match-day defaults are changed in the app under **Admin → Settings**.
 
@@ -164,7 +199,7 @@ You need a Cloudflare account. Everything used here fits the Workers Free plan f
    ```bash
    echo "https://matchday.example.com" | npx wrangler secret put BETTER_AUTH_URL
    ```
-   Invite links generated before the change still point to the old host. Generate new ones.
+   Keep the old address working by listing it in `APP_ORIGINS` in `wrangler.jsonc`, then redeploy. If sign-in on the new domain fails with **"Invalid origin"**, `BETTER_AUTH_URL` doesn't match the domain. Sessions are per domain, so players sign in again on the new address. Invite links generated before the change still point to the old host (which keeps working while it's in `APP_ORIGINS`).
 
 ### Upgrading
 
@@ -198,6 +233,10 @@ npm run db:migrate:remote && npm run deploy
 - **Load an export locally for debugging:** `rm -rf .wrangler/state && npx wrangler d1 execute matchday-db --local --file=backups/matchday-XXXX.sql` (the export contains the schema, so don't run migrations first).
 
 ---
+
+## Design
+
+A light editorial analytics look: the app sits in a white rounded panel over a CSS-drawn pitch, with an Inter Tight grotesk, large thin numerals, soft grey stat cards with faint watermark words, pill controls, and muted green / burnt-orange / tan accents. Tokens live in `src/client/styles.css`. The form chart's palette (`#16794B` win, `#BF8A3E` played, `#C83F1D` absent) passed the dataviz palette validator. Tan is below 3:1 contrast, so the chart always shows a labelled legend, and the match history list doubles as its table view.
 
 ## Project layout
 

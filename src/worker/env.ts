@@ -7,6 +7,8 @@ export interface Bindings {
   BETTER_AUTH_SECRET: string;
   /** Public origin, e.g. https://matchday.example.com. Falls back to the request origin. */
   BETTER_AUTH_URL?: string;
+  /** Extra origins allowed to sign in / send requests (comma-separated), e.g. the workers.dev URL. */
+  APP_ORIGINS?: string;
   /** One-time token that authorises creating the first admin. Remove it after setup. */
   SETUP_TOKEN?: string;
 }

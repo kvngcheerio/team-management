@@ -3,14 +3,23 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, NavLink, useParams } from "react-router";
 import { api } from "../api";
 import { Badge, Button, Card, ConfirmDialog, cx, Empty, ErrorBox, Field, GuestBadge, Input, Loading, PageHeader, Select, useToast } from "../components/ui";
-import { formatInstant } from "../format";
+import { formatDate, formatInstant } from "../format";
+import { scheduledDates } from "../../shared/rules";
+import { todayInZone } from "../../shared/time";
 import { useMe } from "../hooks";
 import type { Player, Season } from "../types";
-import { defaultSeasonEnd } from "../../shared/rules";
+import { defaultSeasonEnd, formatMoney } from "../../shared/rules";
+import FinanceTab from "./Finance";
+import { Avatar, CardIcon } from "../components/ui";
+import type { Card as FineCard } from "../types";
 
 const TABS = [
   { key: "seasons", label: "Seasons" },
+  { key: "schedule", label: "Schedule" },
   { key: "players", label: "Players" },
+  { key: "members", label: "Members" },
+  { key: "fines", label: "Fines" },
+  { key: "finance", label: "Finance" },
   { key: "users", label: "Logins" },
   { key: "settings", label: "Settings" },
   { key: "audit", label: "Audit log" },
@@ -46,7 +55,11 @@ export default function AdminPage() {
         ))}
       </nav>
       {tab === "seasons" && <SeasonsTab />}
+      {tab === "schedule" && <ScheduleTab />}
       {tab === "players" && <PlayersTab />}
+      {tab === "members" && <MembersTab />}
+      {tab === "fines" && <FinesTab />}
+      {tab === "finance" && <FinanceTab />}
       {tab === "users" && <UsersTab />}
       {tab === "settings" && <SettingsTab />}
       {tab === "audit" && <AuditTab />}
@@ -75,7 +88,7 @@ function SeasonsTab() {
   return (
     <div className="space-y-6">
       <Card className="p-4">
-        <h2 className="display text-2xl font-bold uppercase">New season</h2>
+        <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">New season</h2>
         <p className="mb-3 text-sm text-muted">Seasons run six calendar months. The end date defaults to the day before the same date six months later.</p>
         <form onSubmit={submit} className="grid gap-3 sm:grid-cols-3">
           <Field label="Name">
@@ -122,7 +135,7 @@ function SeasonRow({ season: s, onClose }: { season: Season; onClose: () => void
     <li>
       <Card className="p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="display text-xl font-bold uppercase">{s.name}</span>
+          <span className="text-xl font-medium tracking-[-0.02em]">{s.name}</span>
           <Badge tone={s.status === "active" ? "green" : "dark"}>{s.status === "active" ? "Active" : "Closed"}</Badge>
           <span className="text-sm text-muted">{s.startDate} → {s.endDate} · {s.timezone}</span>
           <span className="text-sm text-muted">· {s.finalizedDays}/{s.matchDays} days finalized</span>
@@ -156,11 +169,13 @@ function PlayersTab() {
     "Player added",
     [["players"]],
   );
-  const list = (data?.players ?? []).filter((p) => showInactive || p.active);
+  const list = (data?.players ?? []).filter((p) => p.approved && (showInactive || p.active));
+  const pending = (data?.players ?? []).filter((p) => !p.approved);
   return (
     <div className="space-y-6">
+      {pending.length > 0 && <PendingApprovals pending={pending} candidates={(data?.players ?? []).filter((p) => p.approved && !p.hasAccount)} />}
       <Card className="p-4">
-        <h2 className="display text-2xl font-bold uppercase">Add player</h2>
+        <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Add player</h2>
         <p className="mb-3 text-sm text-muted">Players don't need a login. Send an invite link later to connect one — their history stays attached.</p>
         <form
           className="grid gap-3 sm:grid-cols-3"
@@ -222,6 +237,7 @@ function AdminPlayerRow({ player: p }: { player: Player }) {
   return (
     <li className="px-4 py-3">
       <div className="flex flex-wrap items-center gap-2">
+        <Avatar name={p.displayName} url={p.avatarUrl} size={32} />
         <Link to={`/players/${p.id}`} className="font-semibold hover:underline">{p.displayName}</Link>
         {p.kind === "guest" ? <GuestBadge /> : <Badge tone="green">Member</Badge>}
         {!p.active && <Badge tone="red">Inactive</Badge>}
@@ -284,7 +300,9 @@ function UsersTab() {
   if (users.error) return <ErrorBox error={users.error} />;
   return (
     <div className="space-y-3">
-      <p className="text-sm text-muted">Logins are created through first-time setup or player invite links — public sign-up is disabled. Only admins can grant the admin role.</p>
+      <SignupLinkCard />
+      <AdminInvitesCard />
+      <p className="text-sm text-muted">Logins come from the shared signup link (admin approval required), personal player invites, or admin invites. Only admins can grant the admin role.</p>
       <Card>
         <ul className="divide-y divide-line">
           {users.data!.users.map((u) => (
@@ -294,7 +312,7 @@ function UsersTab() {
                 <div className="text-xs text-muted">{u.email} · {u.playerName ? `Player: ${u.playerName}` : "Not linked to a player"}</div>
               </div>
               {!u.playerId && unlinked.length > 0 && (
-                <Select aria-label="Link to player" className="!min-h-9 w-auto text-sm" defaultValue="" onChange={(e) => e.target.value && link.mutate({ id: u.id, playerId: e.target.value })}>
+                <Select aria-label="Link to player" className="!min-h-9 !w-auto text-sm" defaultValue="" onChange={(e) => e.target.value && link.mutate({ id: u.id, playerId: e.target.value })}>
                   <option value="">Link to player…</option>
                   {unlinked.map((p) => <option key={p.id} value={p.id}>{p.displayName}</option>)}
                 </Select>
@@ -315,10 +333,13 @@ function UsersTab() {
 // ---------------------------------------------------------------------------
 
 function SettingsTab() {
-  const { data, isLoading } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string> }>("/admin/settings") });
+  const { data, isLoading } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string>; signupUrl: string | null }>("/admin/settings") });
   const [f, setF] = useState<Record<string, string>>({});
   useEffect(() => { if (data) setF(data.settings); }, [data]);
-  const save = useAdminMutation(() => api.put("/admin/settings", f), "Settings saved", [["settings"], ["me"]]);
+  const save = useAdminMutation(() => {
+    const { signup_enabled: _ignored, ...rest } = f;
+    return api.put("/admin/settings", rest);
+  }, "Settings saved", [["settings"], ["me"]]);
   if (isLoading) return <Loading />;
   const field = (k: string, label: string, props: React.InputHTMLAttributes<HTMLInputElement> = {}, hint?: string) => (
     <Field label={label} hint={hint}><Input {...props} value={f[k] ?? ""} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>
@@ -332,6 +353,23 @@ function SettingsTab() {
         {field("default_capacity", "Default capacity", { type: "number", min: 2 })}
         {field("default_set_count", "Default number of sets", { type: "number", min: 2 })}
         {field("default_team_size", "Default players per set", { type: "number", min: 1 })}
+        {field("team_sheet_time", "Team sheet visible from", { type: "time" }, "Players see teams from this time on match day (local time).")}
+        {field("fine_yellow", "Yellow card fine (₦)", { type: "number", min: 0 })}
+        {field("fine_red", "Red card fine (₦)", { type: "number", min: 0 })}
+        {field("membership_fee", "Membership fee (₦)", { type: "number", min: 0 }, "Charged per renewal period.")}
+        {field("membership_months", "Renewal period (months)", { type: "number", min: 1 })}
+        {field("guest_fee", "Guest fee per match day (₦)", { type: "number", min: 0 })}
+        {field("guest_free_after", "Guests play free after this many paid days (per season)", { type: "number", min: 0 })}
+        {field("referral_credit", "Invite reward (₦ wallet credit)", { type: "number", min: 0 }, "Paid to the inviter when their invitee first pays.")}
+        <Field label="How players pay" hint="Bank transfer: players transfer and you confirm under Finance. Test: a simulator for trying things out.">
+          <Select value={f.payment_mode ?? "transfer"} onChange={(e) => setF({ ...f, payment_mode: e.target.value })}>
+            <option value="transfer">Bank transfer (admin confirms)</option>
+            <option value="test">Test mode (simulated)</option>
+          </Select>
+        </Field>
+        {field("bank_name", "Bank")}
+        {field("bank_account_number", "Account number", { inputMode: "numeric" })}
+        {field("bank_account_name", "Account name")}
         <div className="sm:col-span-2"><Button type="submit" loading={save.isPending}>Save settings</Button></div>
       </form>
     </Card>
@@ -392,6 +430,398 @@ function AuditTab() {
         </ul>
       </Card>
       {q.hasNextPage && <Button variant="secondary" loading={q.isFetchingNextPage} onClick={() => q.fetchNextPage()}>Load more</Button>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+async function copy(text: string, toast: (m: string, t?: "success" | "error") => void, label: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(`${label} copied`);
+  } catch {
+    toast(text);
+  }
+}
+
+function SignupLinkCard() {
+  const toast = useToast();
+  const { data } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string>; signupUrl: string | null }>("/admin/settings") });
+  const rotate = useAdminMutation(() => api.post("/admin/signup-link/rotate", {}), "New link created — the old one no longer works", [["settings"]]);
+  const toggle = useAdminMutation((on: boolean) => api.put("/admin/settings", { signup_enabled: on ? "1" : "0" }), "Updated", [["settings"]]);
+  const enabled = data?.settings.signup_enabled === "1";
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Signup link</h2>
+        <Badge tone={enabled ? "green" : "gray"}>{enabled ? "Active" : "Off"}</Badge>
+      </div>
+      <p className="text-sm text-muted">Share this in your group chat. New players create their own login; you approve them under Players before they can mark availability.</p>
+      {data?.signupUrl && (
+        <div className="flex flex-wrap gap-2">
+          <code className="min-w-0 flex-1 truncate rounded-lg bg-stone-100 px-3 py-2.5 text-sm">{data.signupUrl}</code>
+          <Button onClick={() => copy(data.signupUrl!, toast, "Signup link")} disabled={!enabled}>Copy link</Button>
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" variant="secondary" onClick={() => toggle.mutate(!enabled)}>{enabled ? "Turn off signups" : "Turn on signups"}</Button>
+        <Button size="sm" variant="ghost" onClick={() => setConfirmRotate(true)}>Reset link</Button>
+      </div>
+      <ConfirmDialog open={confirmRotate} title="Reset the signup link?" confirmLabel="Reset" onClose={() => setConfirmRotate(false)} onConfirm={() => rotate.mutate(undefined, { onSettled: () => setConfirmRotate(false) })}>
+        The current link stops working immediately. Use this if it was shared somewhere it shouldn't be.
+      </ConfirmDialog>
+    </Card>
+  );
+}
+
+function AdminInvitesCard() {
+  const toast = useToast();
+  const [note, setNote] = useState("");
+  const list = useQuery({ queryKey: ["admin-invites"], queryFn: () => api.get<{ invites: { id: string; note: string | null; expiresAt: string; usedAt: string | null; usedByEmail: string | null; createdAt: string }[] }>("/admin/admin-invites") });
+  const create = useMutation({
+    mutationFn: () => api.post<{ url: string; expiresAt: string }>("/admin/admin-invites", { note: note || undefined }),
+    onSuccess: async (r) => {
+      setNote("");
+      list.refetch();
+      await copy(r.url, toast, "Admin invite link (valid 7 days, single use)");
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const revoke = useAdminMutation((id: string) => api.req("DELETE", `/admin/admin-invites/${id}`), "Invite revoked", [["admin-invites"]]);
+  const { data: me } = useMe();
+  return (
+    <Card className="space-y-3 p-4">
+      <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Invite an admin</h2>
+      <p className="text-sm text-muted">Creates a single-use link (valid 7 days) that makes a new account with full admin rights. Send it privately. To promote someone who already has a login, use “Make admin” below.</p>
+      <form className="flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+        <Input className="min-w-0 flex-1" placeholder="Note, e.g. who it's for (optional)" value={note} onChange={(e) => setNote(e.target.value)} maxLength={100} />
+        <Button type="submit" loading={create.isPending}>Create & copy link</Button>
+      </form>
+      {(list.data?.invites ?? []).length > 0 && (
+        <ul className="divide-y divide-line text-sm">
+          {list.data!.invites.map((i) => (
+            <li key={i.id} className="flex flex-wrap items-center gap-2 py-2">
+              <span className="flex-1">{i.note || "Admin invite"} <span className="text-muted">· {formatInstant(i.createdAt, me?.timezone ?? "Africa/Lagos", { day: "numeric", month: "short" })}</span></span>
+              {i.usedAt ? <Badge tone="green">Used by {i.usedByEmail}</Badge> : Date.parse(i.expiresAt) < Date.now() ? <Badge>Expired</Badge> : (
+                <>
+                  <Badge tone="amber">Waiting</Badge>
+                  <Button size="sm" variant="ghost" onClick={() => revoke.mutate(i.id)}>Revoke</Button>
+                </>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+function PendingApprovals({ pending, candidates }: { pending: Player[]; candidates: Player[] }) {
+  const approve = useAdminMutation((v: { id: string; mergeIntoPlayerId?: string }) => api.post(`/players/${v.id}/approve`, { mergeIntoPlayerId: v.mergeIntoPlayerId }), "Approved", [["players"], ["dashboard"]]);
+  const reject = useAdminMutation((id: string) => api.post(`/players/${id}/reject`, {}), "Signup rejected and removed", [["players"], ["dashboard"]]);
+  const [merge, setMerge] = useState<Record<string, string>>({});
+  return (
+    <Card className="border-amber-200 bg-amber-50/50 p-4">
+      <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em] text-amber-900">Waiting for approval ({pending.length})</h2>
+      <p className="mb-2 text-sm text-amber-900">Signed up through the shared link. If they're already in your player list (added manually), merge them so their history stays together.</p>
+      <ul className="divide-y divide-amber-200">
+        {pending.map((p) => (
+          <li key={p.id} className="flex flex-wrap items-center gap-2 py-3">
+            <Avatar name={p.displayName} url={p.avatarUrl} size={36} />
+            <div className="min-w-0 flex-1">
+              <div className="font-semibold">{p.displayName}</div>
+              <div className="text-xs text-muted">{[p.accountEmail, p.contactPhone].filter(Boolean).join(" · ")}</div>
+            </div>
+            {candidates.length > 0 && (
+              <Select aria-label="Merge into existing player" className="!min-h-9 !w-auto text-sm" value={merge[p.id] ?? ""} onChange={(e) => setMerge({ ...merge, [p.id]: e.target.value })}>
+                <option value="">New player</option>
+                {candidates.map((c) => <option key={c.id} value={c.id}>Same as: {c.displayName}</option>)}
+              </Select>
+            )}
+            <Button size="sm" loading={approve.isPending} onClick={() => approve.mutate({ id: p.id, mergeIntoPlayerId: merge[p.id] || undefined })}>Approve</Button>
+            <Button size="sm" variant="danger" onClick={() => reject.mutate(p.id)}>Reject</Button>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+
+interface FinesSummary {
+  currency: string;
+  fines: { yellow: number; red: number };
+  totals: { owed: number; paid: number; waived: number };
+  perPlayer: { playerId: string; displayName: string; yellow: number; red: number; owed: number; paid: number; waived: number }[];
+  cards: FineCard[];
+}
+
+function FinesTab() {
+  const { data, isLoading, error } = useQuery({ queryKey: ["admin-fines"], queryFn: () => api.get<FinesSummary>("/admin/fines") });
+  const [action, setAction] = useState<null | { id: string; kind: "void" | "waive" }>(null);
+  const act = useAdminMutation((v: { id: string; kind: string; reason?: string }) => api.post(`/cards/${v.id}/${v.kind}`, { reason: v.reason }), "Updated", [["admin-fines"], ["finance"], ["stats"]]);
+  const [filter, setFilter] = useState<"unpaid" | "all">("unpaid");
+  if (isLoading) return <Loading />;
+  if (error) return <ErrorBox error={error} />;
+  const d = data!;
+  const money = (n: number) => formatMoney(n, d.currency);
+  const cards = d.cards.filter((k) => filter === "all" || (k.fineStatus === "unpaid" && !k.voided));
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-3 gap-2">
+        {[["Owed", d.totals.owed, "text-red-700"], ["Collected", d.totals.paid, "text-pitch-800"], ["Waived", d.totals.waived, "text-muted"]].map(([l, v, tone]) => (
+          <Card key={l as string} className="px-4 py-3">
+            <div className="text-sm text-muted">{l}</div>
+            <div className={cx("num stat text-2xl", tone as string)}>{money(v as number)}</div>
+          </Card>
+        ))}
+      </div>
+      <p className="text-sm text-muted">Yellow {money(d.fines.yellow)} · Red {money(d.fines.red)} — change in Settings. Cards are given from the live results screen.</p>
+      {d.perPlayer.length > 0 && (
+        <Card className="overflow-x-auto">
+          <table className="num w-full text-sm">
+            <thead className="text-xs text-muted">
+              <tr className="border-b border-line"><th className="px-4 py-2 text-left">Player</th><th>YC</th><th>RC</th><th className="text-right">Owed</th><th className="px-4 text-right">Paid</th></tr>
+            </thead>
+            <tbody>
+              {d.perPlayer.map((r) => (
+                <tr key={r.playerId} className="border-b border-line text-center last:border-0">
+                  <td className="px-4 py-2.5 text-left"><Link to={`/players/${r.playerId}`} className="hover:underline">{r.displayName}</Link></td>
+                  <td>{r.yellow}</td><td>{r.red}</td>
+                  <td className={cx("text-right", r.owed > 0 && "font-semibold text-red-700")}>{money(r.owed)}</td>
+                  <td className="px-4 text-right">{money(r.paid)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+      <div className="flex gap-1">
+        {(["unpaid", "all"] as const).map((k) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("min-h-10 rounded-full px-4 text-sm font-semibold", filter === k ? "bg-pitch-800 text-white" : "bg-white ring-1 ring-line")}>{k === "unpaid" ? "Unpaid" : "All cards"}</button>
+        ))}
+      </div>
+      {cards.length === 0 ? <Empty title={filter === "unpaid" ? "No unpaid fines" : "No cards yet"} /> : (
+        <Card>
+          <ul className="divide-y divide-line">
+            {cards.map((k) => (
+              <li key={k.id} className={cx("flex flex-wrap items-center gap-2 px-4 py-3 text-sm", k.voided && "opacity-50")}>
+                <CardIcon color={k.color} />
+                <span className="min-w-0 flex-1">
+                  <Link to={`/players/${k.playerId}`} className="font-medium hover:underline">{k.displayName}</Link>
+                  <span className="text-muted"> · {k.date} {k.reason && `· ${k.reason}`}</span>
+                  {k.voided && <span className="block text-xs text-muted">Voided: {k.voidReason}</span>}
+                </span>
+                <span className="num font-semibold">{money(k.fineAmount)}</span>
+                {!k.voided && <Badge tone={k.fineStatus === "paid" ? "green" : k.fineStatus === "waived" ? "gray" : "red"}>{k.fineStatus === "paid" ? `Paid (${k.paidVia})` : k.fineStatus}</Badge>}
+                {!k.voided && k.fineStatus === "unpaid" && (
+                  <>
+                    <Button size="sm" variant="secondary" onClick={() => act.mutate({ id: k.id, kind: "mark-paid" })}>Paid cash</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setAction({ id: k.id, kind: "waive" })}>Waive</Button>
+                  </>
+                )}
+                {!k.voided && k.fineStatus === "waived" && <Button size="sm" variant="ghost" onClick={() => act.mutate({ id: k.id, kind: "reopen" })}>Reopen</Button>}
+                {!k.voided && !(k.fineStatus === "paid" && k.paidVia === "online") && <Button size="sm" variant="ghost" onClick={() => setAction({ id: k.id, kind: "void" })}>Void card</Button>}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+      <ConfirmDialog open={!!action} title={action?.kind === "void" ? "Void this card?" : "Waive this fine?"} requireReason confirmLabel={action?.kind === "void" ? "Void card" : "Waive fine"} tone="danger"
+        onClose={() => setAction(null)} onConfirm={(reason) => act.mutate({ id: action!.id, kind: action!.kind, reason }, { onSettled: () => setAction(null) })}>
+        {action?.kind === "void" ? "The card is removed from stats and the fine is cancelled." : "The card stays on the record but nothing is owed."}
+      </ConfirmDialog>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+interface MembersResponse {
+  settings: { membershipFee: number; membershipMonths: number; currency: string };
+  players: { playerId: string; displayName: string; kind: "member" | "guest"; paidUntil: string | null; status: string; wallet: number; referredBy: string | null; hasAccount: boolean }[];
+}
+
+function MembersTab() {
+  const { data, isLoading, error } = useQuery({ queryKey: ["memberships"], queryFn: () => api.get<MembersResponse>("/admin/memberships") });
+  const [markPaid, setMarkPaid] = useState<{ id: string; name: string } | null>(null);
+  const [adjust, setAdjust] = useState<{ id: string; name: string } | null>(null);
+  const [adj, setAdj] = useState({ amount: "", note: "" });
+  const [filter, setFilter] = useState<"all" | "due" | "guests">("all");
+  const pay = useAdminMutation((id: string) => api.post(`/players/${id}/membership/mark-paid`, {}), "Membership recorded (cash)", [["memberships"], ["players"], ["finance"]]);
+  const wallet = useAdminMutation((v: { id: string; amount: number; note: string }) => api.post(`/players/${v.id}/wallet/adjust`, { amount: v.amount, note: v.note }), "Wallet updated", [["memberships"]]);
+  if (isLoading) return <Loading />;
+  if (error) return <ErrorBox error={error} />;
+  const d = data!;
+  const money = (n: number) => formatMoney(n, d.settings.currency);
+  const rows = d.players.filter((p) => filter === "all" || (filter === "guests" ? p.kind === "guest" : p.status === "due_soon" || p.status === "overdue"));
+  const counts = { members: d.players.filter((p) => p.kind === "member").length, guests: d.players.filter((p) => p.kind === "guest").length, due: d.players.filter((p) => p.status === "due_soon" || p.status === "overdue").length };
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted">
+        Membership is {money(d.settings.membershipFee)} every {d.settings.membershipMonths} months. Paying online (or you recording a cash payment here) makes a guest a member. Membership never lapses; overdue members just see a renewal reminder.
+      </p>
+      <div className="flex flex-wrap gap-1">
+        {([["all", `Everyone (${d.players.length})`], ["due", `Renewal due (${counts.due})`], ["guests", `Guests (${counts.guests})`]] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} className={cx("min-h-10 rounded-full px-4 text-sm font-semibold", filter === k ? "bg-pitch-800 text-white" : "bg-white ring-1 ring-line")}>{l}</button>
+        ))}
+      </div>
+      <Card>
+        <ul className="divide-y divide-line">
+          {rows.map((p) => (
+            <li key={p.playerId} className="flex flex-wrap items-center gap-2 px-4 py-3 text-sm">
+              <div className="min-w-0 flex-1">
+                <Link to={`/players/${p.playerId}`} className="font-semibold hover:underline">{p.displayName}</Link>
+                <div className="text-xs text-muted">
+                  {p.kind === "member" ? (p.paidUntil ? `Paid until ${p.paidUntil}` : "No membership payment recorded") : "Guest"}
+                  {p.referredBy && ` · invited by ${p.referredBy}`}
+                  {p.wallet !== 0 && ` · wallet ${money(p.wallet)}`}
+                </div>
+              </div>
+              <Badge tone={p.kind === "guest" ? "amber" : p.status === "overdue" ? "red" : p.status === "due_soon" ? "amber" : "green"}>
+                {p.kind === "guest" ? "Guest" : p.status === "overdue" ? "Renewal due" : p.status === "due_soon" ? "Due soon" : "Member"}
+              </Badge>
+              <Button size="sm" variant="secondary" onClick={() => setMarkPaid({ id: p.playerId, name: p.displayName })}>{p.kind === "member" ? "Record renewal" : "Mark membership paid"}</Button>
+              <Button size="sm" variant="ghost" onClick={() => { setAdj({ amount: "", note: "" }); setAdjust({ id: p.playerId, name: p.displayName }); }}>Wallet</Button>
+            </li>
+          ))}
+        </ul>
+      </Card>
+      <ConfirmDialog open={!!markPaid} title={`Record ${money(d.settings.membershipFee)} cash for ${markPaid?.name}?`} confirmLabel="Record payment" loading={pay.isPending}
+        onClose={() => setMarkPaid(null)} onConfirm={() => pay.mutate(markPaid!.id, { onSettled: () => setMarkPaid(null) })}>
+        They become (or stay) a member and their paid-until date moves forward {d.settings.membershipMonths} months. It shows in Finance as cash income.
+      </ConfirmDialog>
+      {adjust && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Adjust wallet">
+          <Card className="w-full max-w-md space-y-3 p-5">
+            <h3 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Wallet · {adjust.name}</h3>
+            <Field label="Amount (₦)" hint="Positive to add credit, negative to deduct."><Input type="number" step={1} value={adj.amount} onChange={(e) => setAdj({ ...adj, amount: e.target.value })} /></Field>
+            <Field label="Note"><Input value={adj.note} onChange={(e) => setAdj({ ...adj, note: e.target.value })} placeholder="e.g. Goodwill credit" /></Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setAdjust(null)}>Cancel</Button>
+              <Button loading={wallet.isPending} disabled={!Number(adj.amount) || adj.note.trim().length < 3}
+                onClick={() => wallet.mutate({ id: adjust.id, amount: Number(adj.amount), note: adj.note }, { onSuccess: () => setAdjust(null) })}>Save</Button>
+            </div>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+const WEEKDAYS = [
+  { n: 1, short: "Mon" },
+  { n: 2, short: "Tue" },
+  { n: 3, short: "Wed" },
+  { n: 4, short: "Thu" },
+  { n: 5, short: "Fri" },
+  { n: 6, short: "Sat" },
+  { n: 7, short: "Sun" },
+];
+
+function ScheduleTab() {
+  const toast = useToast();
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string> }>("/admin/settings") });
+  const [f, setF] = useState<Record<string, string> | null>(null);
+  useEffect(() => {
+    if (data && !f) setF(data.settings);
+  }, [data, f]);
+  const save = useMutation({
+    mutationFn: () =>
+      api.put("/admin/settings", {
+        match_weekdays: f!.match_weekdays ?? "",
+        schedule_kickoff: f!.schedule_kickoff,
+        schedule_open_days_before: f!.schedule_open_days_before,
+        schedule_close_hours_before: f!.schedule_close_hours_before,
+        schedule_weeks_ahead: f!.schedule_weeks_ahead,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["settings"] });
+      toast("Schedule saved");
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const run = useMutation({
+    mutationFn: async () => {
+      await save.mutateAsync();
+      return api.post<{ created: string[]; opened: string[] }>("/admin/schedule/run", {});
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["matchdays"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+      toast(r.created.length || r.opened.length ? `Created ${r.created.length}, opened check-in on ${r.opened.length}` : "Everything is already up to date");
+    },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  if (isLoading || !f) return <Loading />;
+  const selected = new Set((f.match_weekdays ?? "").split(",").filter(Boolean).map(Number));
+  const toggle = (n: number) => {
+    const next = new Set(selected);
+    if (next.has(n)) next.delete(n);
+    else next.add(n);
+    setF({ ...f, match_weekdays: [...next].sort().join(",") });
+  };
+  const tz = f.timezone ?? "Africa/Lagos";
+  const today = todayInZone(tz);
+  const preview = scheduledDates(today, Number(f.schedule_weeks_ahead ?? 2) * 7, [...selected]);
+  return (
+    <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+      <Card className="space-y-6 p-5 sm:p-6">
+        <div>
+          <h2 className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Match days</h2>
+          <p className="text-sm text-muted">Pick the days you play. Match days are created automatically each morning and check-in opens on its own.</p>
+        </div>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Match weekdays">
+          {WEEKDAYS.map((w) => (
+            <button
+              key={w.n}
+              type="button"
+              aria-pressed={selected.has(w.n)}
+              onClick={() => toggle(w.n)}
+              className={cx("min-h-12 min-w-16 rounded-full border px-4 text-[15px] transition", selected.has(w.n) ? "border-pitch-700 bg-pitch-700 text-white" : "border-line bg-white text-ink hover:border-pitch-700/50")}
+            >
+              {w.short}
+            </button>
+          ))}
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="Kick-off"><Input type="time" value={f.schedule_kickoff ?? "07:00"} onChange={(e) => setF({ ...f, schedule_kickoff: e.target.value })} /></Field>
+          <Field label="Create match days this many weeks ahead"><Input type="number" min={1} max={8} value={f.schedule_weeks_ahead ?? "2"} onChange={(e) => setF({ ...f, schedule_weeks_ahead: e.target.value })} /></Field>
+          <Field label="Check-in opens (days before)"><Input type="number" min={0} max={14} value={f.schedule_open_days_before ?? "3"} onChange={(e) => setF({ ...f, schedule_open_days_before: e.target.value })} /></Field>
+          <Field label="Check-in closes (hours before kick-off)"><Input type="number" min={0} max={72} value={f.schedule_close_hours_before ?? "11"} onChange={(e) => setF({ ...f, schedule_close_hours_before: e.target.value })} /></Field>
+        </div>
+        <p className="text-sm text-muted">
+          Venue, capacity, sets and players per set come from <Link to="/admin/settings" className="underline">Settings</Link>. Team sheets show at {f.team_sheet_time ?? "07:50"} on match day. Each day can still be edited or cancelled on its own.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button loading={save.isPending && !run.isPending} onClick={() => save.mutate()}>Save schedule</Button>
+          <Button variant="secondary" loading={run.isPending} disabled={selected.size === 0} onClick={() => run.mutate()}>Save & create upcoming days now</Button>
+        </div>
+      </Card>
+      <div className="space-y-3">
+        <div className="relative overflow-hidden rounded-[22px] border border-line bg-chalk p-5">
+          <span className="watermark" aria-hidden>Next</span>
+          <div className="relative text-[15px]">Coming up</div>
+          {preview.length === 0 ? (
+            <p className="relative mt-6 text-sm text-muted">No weekdays selected — match days are only created by hand.</p>
+          ) : (
+            <ul className="relative mt-4 space-y-3">
+              {preview.map((d) => (
+                <li key={d} className="flex items-baseline gap-3">
+                  <span className="stat w-12 text-[34px]">{formatDate(d, { day: "numeric" })}</span>
+                  <span className="text-[15px]">{formatDate(d, { weekday: "long" })}, {formatDate(d, { month: "long" })}</span>
+                  <span className="ml-auto text-sm text-muted">{f.schedule_kickoff ?? "07:00"}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <p className="px-1 text-xs text-muted">Dates outside an active season are skipped. Cancelled dates are never recreated. The daily job runs at 06:00 WAT.</p>
+      </div>
     </div>
   );
 }

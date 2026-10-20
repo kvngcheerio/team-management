@@ -154,7 +154,8 @@ describe("guest registration", () => {
 describe("cancellation", () => {
   it("cancelled days award no points and can't be finalized", async () => {
     const day = await createMatchDay(admin, seasonId, { date: "2026-12-19", checkinDeadlineDate: "2026-12-18" });
-    const res = await admin.post(`/matchdays/${day.day.id}/transition`, { to: "cancelled" });
+    expect((await admin.post(`/matchdays/${day.day.id}/transition`, { to: "cancelled" })).status).toBe(422);
+    const res = await admin.post(`/matchdays/${day.day.id}/transition`, { to: "cancelled", reason: "Pitch waterlogged" });
     expect(res.body.day.status).toBe("cancelled");
     expect((await admin.post(`/matchdays/${day.day.id}/finalize`)).status).toBe(409);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM day_player_stats WHERE match_day_id = ?").bind(day.day.id).first("n")).toBe(0);

@@ -49,7 +49,7 @@ export default function SignInPage() {
         <Button type="submit" size="lg" className="w-full" loading={busy}>
           Sign in
         </Button>
-        <p className="text-center text-sm text-muted">No account? Ask an admin for your personal invite link.</p>
+        <p className="text-center text-sm text-muted">New here? Ask a teammate for their invite link to sign up.</p>
       </form>
     </PublicCard>
   );

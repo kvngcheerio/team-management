@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api } from "../api";
-import { Card, Empty, ErrorBox, GuestBadge, Input, Loading, PageHeader, TextLink } from "../components/ui";
+import { Avatar, Card, Empty, ErrorBox, GuestBadge, Input, Loading, PageHeader, TextLink } from "../components/ui";
 import { useIsAdmin } from "../hooks";
 import type { Player } from "../types";
 
@@ -27,7 +27,7 @@ export default function PlayersPage() {
             {list.map((p) => (
               <li key={p.id}>
                 <Link to={`/players/${p.id}`} className="flex min-h-12 items-center gap-3 px-4 py-2 hover:bg-pitch-50">
-                  <span className="grid size-9 place-items-center rounded-full bg-pitch-100 text-sm font-bold text-pitch-800">{p.displayName.slice(0, 1).toUpperCase()}</span>
+                  <Avatar name={p.displayName} url={p.avatarUrl} size={36} />
                   <span className="font-medium">{p.displayName}</span>
                   {p.kind === "guest" && <GuestBadge />}
                   <span className="ml-auto text-muted">›</span>

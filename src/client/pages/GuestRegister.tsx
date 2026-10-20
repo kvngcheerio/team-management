@@ -61,7 +61,7 @@ export default function GuestRegisterPage() {
   return (
     <PublicCard title="Play as a guest" kicker={d.groupName}>
       <div className="mb-5 rounded-xl bg-pitch-50 p-4">
-        <div className="display text-2xl font-bold uppercase text-pitch-900">{formatDateLong(d.date)}</div>
+        <div className="text-[26px] font-medium leading-tight tracking-[-0.025em]">{formatDateLong(d.date)}</div>
         <div className="mt-1 text-sm text-pitch-900">
           Kick-off {d.kickoffTime}
           {d.venue && ` · ${d.venue}`}
@@ -72,7 +72,7 @@ export default function GuestRegisterPage() {
       </div>
       {done ? (
         <div role="status" className="rounded-xl border border-pitch-200 bg-pitch-50 p-4">
-          <p className="display text-2xl font-bold uppercase text-pitch-900">Request sent</p>
+          <p className="text-[26px] font-medium leading-tight tracking-[-0.025em]">Request sent</p>
           <p className="mt-1 text-sm text-pitch-900">An admin will review it. Guests can play and score but don't earn league points. You're not confirmed until approved.</p>
         </div>
       ) : !d.open ? (

@@ -7,6 +7,7 @@ import { all, atomic, auditStmt, first, getSetting, guard, HttpError, newId, now
 import { requireAdmin, requireUser } from "../lib/guards";
 import { seasonTables } from "../lib/standings";
 import { body, zDate, zName, zReason } from "../lib/validate";
+import { mvpAwards } from "./mvp";
 
 export const seasonRoutes = new Hono<AppEnv>();
 
@@ -19,9 +20,12 @@ interface SeasonRow {
   status: "active" | "closed";
   closed_at: string | null;
   created_at: string;
+  match_days?: number;
+  finalized_days?: number;
+  started_days?: number;
 }
 
-const toSeason = (s: SeasonRow & { match_days?: number; finalized_days?: number; started_days?: number }) => ({
+const toSeason = (s: SeasonRow) => ({
   id: s.id,
   name: s.name,
   startDate: s.start_date,
@@ -185,4 +189,78 @@ seasonRoutes.post("/seasons/:id/close", requireAdmin, async (c) => {
     "The season was already closed.",
   );
   return c.json({ ok: true });
+});
+
+/** Season stats: appearances, wins, goals, assists, cards — plus fines totals for admins. */
+seasonRoutes.get("/seasons/:id/stats", requireUser, async (c) => {
+  const db = c.env.DB;
+  const season = await first<SeasonRow>(db, `${SEASON_LIST_SQL} WHERE s.id = ?`, c.req.param("id"));
+  if (!season) throw new HttpError(404, "Season not found.");
+  const rows = await all<{
+    playerId: string;
+    displayName: string;
+    kind: string;
+    avatar_updated_at: string | null;
+    appearances: number | null;
+    dailyWins: number | null;
+    points: number | null;
+    goals: number | null;
+    assists: number | null;
+    ownGoals: number | null;
+    yellow: number | null;
+    red: number | null;
+    owed: number | null;
+    paid: number | null;
+  }>(
+    db,
+    `WITH st AS (
+       SELECT d.player_id, SUM(d.attended) AS appearances, SUM(d.daily_win) AS dailyWins, SUM(d.points) AS points,
+              SUM(d.goals) AS goals, SUM(d.assists) AS assists, SUM(d.own_goals) AS ownGoals
+         FROM day_player_stats d JOIN match_days md ON md.id = d.match_day_id AND md.status = 'finalized' AND md.season_id = ?1
+        GROUP BY d.player_id),
+     cd AS (
+       SELECT k.player_id, SUM(k.color = 'yellow') AS yellow, SUM(k.color = 'red') AS red,
+              SUM(CASE WHEN k.fine_status = 'unpaid' THEN k.fine_amount ELSE 0 END) AS owed,
+              SUM(CASE WHEN k.fine_status = 'paid' THEN k.fine_amount ELSE 0 END) AS paid
+         FROM cards k JOIN match_days md ON md.id = k.match_day_id AND md.status <> 'cancelled' AND md.season_id = ?1
+        WHERE k.voided_at IS NULL GROUP BY k.player_id)
+     SELECT p.id AS playerId, p.display_name AS displayName, p.kind, p.avatar_updated_at,
+            st.appearances, st.dailyWins, st.points, st.goals, st.assists, st.ownGoals, cd.yellow, cd.red, cd.owed, cd.paid
+       FROM players p LEFT JOIN st ON st.player_id = p.id LEFT JOIN cd ON cd.player_id = p.id
+      WHERE st.player_id IS NOT NULL OR cd.player_id IS NOT NULL
+      ORDER BY p.display_name COLLATE NOCASE`,
+    season.id,
+  );
+  const admin = c.get("user")?.role === "admin";
+  const awards = await mvpAwards(c, season.id);
+  const seasonMvp = awards.season.get(season.id) ?? [];
+  const players = rows.map((r) => {
+    const appearances = r.appearances ?? 0;
+    return {
+      playerId: r.playerId,
+      displayName: r.displayName,
+      kind: r.kind,
+      avatarUrl: r.avatar_updated_at ? `/api/players/${r.playerId}/avatar?v=${encodeURIComponent(r.avatar_updated_at)}` : null,
+      appearances,
+      dailyWins: r.dailyWins ?? 0,
+      winRate: appearances > 0 ? Math.round(((r.dailyWins ?? 0) / appearances) * 100) : 0,
+      points: r.points ?? 0,
+      goals: r.goals ?? 0,
+      assists: r.assists ?? 0,
+      ownGoals: r.ownGoals ?? 0,
+      yellow: r.yellow ?? 0,
+      red: r.red ?? 0,
+      mvpAwards: awards.weekly.get(r.playerId) ?? 0,
+      seasonMvp: seasonMvp.includes(r.playerId),
+      ...(admin ? { owed: r.owed ?? 0, paid: r.paid ?? 0 } : {}),
+    };
+  });
+  const totals = {
+    matchDays: season.finalized_days ?? 0,
+    goals: players.reduce((s, p) => s + p.goals, 0),
+    yellow: players.reduce((s, p) => s + p.yellow, 0),
+    red: players.reduce((s, p) => s + p.red, 0),
+    ...(admin ? { owed: rows.reduce((s, r) => s + (r.owed ?? 0), 0), paid: rows.reduce((s, r) => s + (r.paid ?? 0), 0) } : {}),
+  };
+  return c.json({ season: toSeason(season), players, totals });
 });

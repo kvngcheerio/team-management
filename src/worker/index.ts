@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import { secureHeaders } from "hono/secure-headers";
-import { createAuth } from "./auth";
+import { allowedOrigins, createAuth } from "./auth";
 import type { AppEnv, SessionUser } from "./env";
 import { HttpError } from "./lib/db";
 import { rateLimit } from "./lib/rate-limit";
+import { runSchedule } from "./lib/schedule";
 import { adminRoutes } from "./routes/admin";
+import { announcementRoutes } from "./routes/announcements";
+import { disciplineRoutes } from "./routes/discipline";
+import { mvpRoutes } from "./routes/mvp";
+import { financeRoutes } from "./routes/finance";
+import { paymentRoutes } from "./routes/payments";
 import { matchRoutes } from "./routes/matches";
 import { matchDayRoutes } from "./routes/matchdays";
 import { playerRoutes } from "./routes/players";
@@ -17,7 +23,7 @@ const app = new Hono<AppEnv>().basePath("/api");
 app.use("*", secureHeaders({ crossOriginResourcePolicy: "same-origin" }));
 app.use("*", async (c, next) => {
   await next();
-  c.header("Cache-Control", "no-store");
+  if (!c.res.headers.has("Cache-Control")) c.header("Cache-Control", "no-store");
 });
 
 /**
@@ -28,8 +34,7 @@ app.use("*", async (c, next) => {
 app.use("*", async (c, next) => {
   if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     const origin = c.req.header("Origin");
-    const allowed = new Set([new URL(c.req.url).origin]);
-    if (c.env.BETTER_AUTH_URL) allowed.add(new URL(c.env.BETTER_AUTH_URL).origin);
+    const allowed = new Set([new URL(c.req.url).origin, ...allowedOrigins(c.env, c.env.BETTER_AUTH_URL || new URL(c.req.url).origin)]);
     if (origin && !allowed.has(origin)) throw new HttpError(403, "Cross-origin request blocked.");
     const ct = c.req.header("Content-Type") ?? "";
     const hasBody = c.req.header("Content-Length") !== "0" && c.req.raw.body !== null;
@@ -71,6 +76,11 @@ app.route("/", seasonRoutes);
 app.route("/", playerRoutes);
 app.route("/", matchDayRoutes);
 app.route("/", matchRoutes);
+app.route("/", disciplineRoutes);
+app.route("/", mvpRoutes);
+app.route("/", financeRoutes);
+app.route("/", paymentRoutes);
+app.route("/", announcementRoutes);
 app.route("/", adminRoutes);
 
 app.notFound((c) => c.json({ error: "Not found" }, 404));
@@ -83,4 +93,10 @@ app.onError((err, c) => {
   return c.json({ error: "Something went wrong. Please try again." }, 500);
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  /** Daily cron (see wrangler.jsonc triggers): create scheduled match days and open check-in. */
+  async scheduled(_event: ScheduledController, env: AppEnv["Bindings"], ctx: ExecutionContext) {
+    ctx.waitUntil(runSchedule(env.DB).then((r) => console.log("schedule", JSON.stringify(r))));
+  },
+} satisfies ExportedHandler<AppEnv["Bindings"]>;

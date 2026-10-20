@@ -31,9 +31,10 @@ export const STATUS_LABEL: Record<string, string> = {
 };
 
 export const REG_LABEL: Record<string, string> = {
-  pending: "Awaiting approval",
+  pending: "Awaiting payment",
   confirmed: "Playing",
   waitlist: "Waiting list",
   withdrawn: "Withdrawn",
   rejected: "Declined",
+  unavailable: "Not available",
 };
