@@ -64,9 +64,21 @@ export function rosterEditable(status: MatchDayStatus): boolean {
   return status === "checkin_open" || status === "locked";
 }
 
-/** Members may check in / withdraw themselves only while check-in is open and before the deadline. */
+/** Members may withdraw themselves only while check-in is open and before the deadline. */
 export function selfCheckInOpen(status: MatchDayStatus, deadlineIso: string, now: Date): boolean {
   return status === "checkin_open" && now.getTime() < Date.parse(deadlineIso);
+}
+
+/**
+ * The check-in deadline is soft: members may still check in after it, until an admin closes check-in.
+ * Such check-ins are flagged late (`isLateCheckIn`) so lateness can be enforced separately.
+ */
+export function lateCheckInAllowed(status: MatchDayStatus): boolean {
+  return status === "checkin_open";
+}
+
+export function isLateCheckIn(deadlineIso: string, now: Date): boolean {
+  return now.getTime() >= Date.parse(deadlineIso);
 }
 
 // ---------------------------------------------------------------------------
@@ -710,6 +722,17 @@ export function chooseSetForLateGuest(sets: SetFill[], teamSize: number): SetFil
   const open = sets.filter((s) => s.size < teamSize);
   if (open.length === 0) return null;
   return [...open].sort((a, b) => a.size - b.size || a.totalRating - b.totalRating || a.idx - b.idx)[0]!;
+}
+
+/**
+ * Where a player confirmed after teams are published goes: the same set a late guest would join, as a
+ * starter; when every set is full, the smallest set (same tie-breaks) as a sub. Null when there are no sets.
+ */
+export function chooseSetForLatePlayer(sets: SetFill[], teamSize: number): { set: SetFill; role: "starter" | "sub" } | null {
+  const open = chooseSetForLateGuest(sets, teamSize);
+  if (open) return { set: open, role: "starter" };
+  const set = [...sets].sort((a, b) => a.size - b.size || a.totalRating - b.totalRating || a.idx - b.idx)[0];
+  return set ? { set, role: "sub" } : null;
 }
 
 /**

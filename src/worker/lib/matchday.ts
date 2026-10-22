@@ -1,6 +1,6 @@
-import { computeDayStats, type DayState, type GoalKind, type MatchDayStatus, type MatchStatus, type TiePolicy } from "../../shared/rules";
+import { chooseSetForLatePlayer, computeDayStats, type DayState, type SetFill, type GoalKind, type MatchDayStatus, type MatchStatus, type TiePolicy } from "../../shared/rules";
 import type { Ctx } from "../env";
-import { all, atomic, auditStmt, first, guard, HttpError, nowIso, stmt, type AuditEntry } from "./db";
+import { all, atomic, auditStmt, ConflictError, first, guard, HttpError, nowIso, stmt, type AuditEntry } from "./db";
 
 export interface MatchDayRow {
   id: string;
@@ -78,6 +78,7 @@ export interface RegistrationRow {
   guest_note: string | null;
   fee_status: "none" | "unpaid" | "paid" | "free" | "waived";
   fee_amount: number;
+  checked_in_late: number;
   queued_at: string;
   created_at: string;
   display_name: string;
@@ -134,6 +135,64 @@ export async function loadDayFull(db: D1Database, id: string): Promise<LoadedDay
     goals: goals!.results as GoalRow[],
     registrations: registrations!.results as RegistrationRow[],
   };
+}
+
+/** Each published set's size and total skill rating, for late placement. */
+export async function setFills(db: D1Database, loaded: LoadedDay): Promise<SetFill[]> {
+  const ratings = new Map(
+    (await all<{ id: string; skill_rating: number }>(db, "SELECT p.id, p.skill_rating FROM roster_entries r JOIN players p ON p.id = r.player_id WHERE r.match_day_id = ?", loaded.day.id)).map((r) => [r.id, r.skill_rating]),
+  );
+  return loaded.sets.map((s) => {
+    const members = loaded.roster.filter((r) => r.set_id === s.id);
+    return { setId: s.id, idx: s.idx, size: members.length, totalRating: members.reduce((n, r) => n + (ratings.get(r.player_id) ?? 5), 0) };
+  });
+}
+
+/**
+ * A player confirmed after teams were published (late check-in, promotion, paid guest fee…) joins a
+ * team automatically (`chooseSetForLatePlayer`). No-op unless teams exist, play hasn't started, and the
+ * player is confirmed but not yet in a set. Retries on a concurrent roster change; never throws, since
+ * the registration itself has already succeeded (admins can still place the player by hand).
+ */
+export async function autoPlaceInTeam(c: Ctx, dayId: string, playerId: string): Promise<{ setName: string; role: "starter" | "sub" } | null> {
+  const db = c.env.DB;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const loaded = await loadDayFull(db, dayId);
+      const { day } = loaded;
+      if (!["checkin_open", "locked"].includes(day.status) || loaded.sets.length === 0) return null;
+      if (loaded.registrations.find((r) => r.player_id === playerId)?.status !== "confirmed") return null;
+      if (loaded.roster.some((r) => r.player_id === playerId)) return null;
+      const choice = chooseSetForLatePlayer(await setFills(db, loaded), day.team_size);
+      if (!choice) return null;
+      const setName = loaded.sets.find((s) => s.id === choice.set.setId)!.name;
+      await commitDay(
+        c,
+        day,
+        [
+          stmt(
+            db,
+            `INSERT INTO roster_entries (match_day_id, set_id, player_id, role, is_goalkeeper)
+             SELECT ?1, ?2, ?3, ?4, 0 WHERE EXISTS (SELECT 1 FROM registrations WHERE match_day_id = ?1 AND player_id = ?3 AND status = 'confirmed')`,
+            day.id,
+            choice.set.setId,
+            playerId,
+            choice.role,
+          ),
+          guard(db),
+        ],
+        { audit: { action: "roster.auto_place", entityType: "player", entityId: playerId, after: { set: setName, role: choice.role } } },
+      );
+      return { setName, role: choice.role };
+    } catch (err) {
+      if (!(err instanceof ConflictError)) {
+        console.error("auto-place failed", dayId, playerId, err);
+        return null;
+      }
+    }
+  }
+  console.error("auto-place gave up after concurrent changes", dayId, playerId);
+  return null;
 }
 
 export function toDayState(l: LoadedDay): DayState {

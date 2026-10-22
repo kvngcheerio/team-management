@@ -11,6 +11,7 @@ import {
   reconcileMatch,
   rosterEditable,
   seededRandom,
+  lateCheckInAllowed,
   selfCheckInOpen,
   SET_COLORS,
   SET_NAMES,
@@ -28,11 +29,13 @@ import { randomToken } from "../lib/crypto";
 import { all, atomic, auditStmt, first, getSetting, guard, HttpError, newId, nowIso, stmt } from "../lib/db";
 import { isAdmin, requireAdmin, requireUser } from "../lib/guards";
 import {
+  autoPlaceInTeam,
   commitDay,
   correctionContext,
   loadDay,
   loadDayFull,
   seasonOf,
+  setFills,
   toDayState,
   type LoadedDay,
   type MatchDayRow,
@@ -143,6 +146,7 @@ export async function buildDetail(c: Ctx, loaded: LoadedDay) {
       source: r.source,
       attended: r.attended == null ? null : r.attended === 1,
       queuedAt: r.queued_at,
+      late: r.checked_in_late === 1,
       waitlistPosition: r.status === "waitlist" ? ++waitPos : null,
       ...(admin || r.player_id === me?.id ? { feeStatus: r.fee_status, feeAmount: r.fee_amount } : {}),
       ...(admin ? { note: r.guest_note, contactEmail: r.contact_email, contactPhone: r.contact_phone } : {}),
@@ -224,7 +228,8 @@ export async function buildDetail(c: Ctx, loaded: LoadedDay) {
           playerId: me.id,
           kind: me.kind,
           registrationStatus: mine?.status ?? null,
-          canCheckIn: selfCheckInOpen(day.status, day.checkin_deadline, new Date()) && me.active === 1 && me.approved === 1,
+          canCheckIn: lateCheckInAllowed(day.status) && me.active === 1 && me.approved === 1,
+          canWithdraw: selfCheckInOpen(day.status, day.checkin_deadline, new Date()) && me.active === 1 && me.approved === 1,
           approved: me.approved === 1,
           feeStatus: mine?.fee_status ?? null,
           feeAmount: mine?.fee_amount ?? 0,
@@ -548,9 +553,9 @@ matchDayRoutes.post("/matchdays/:id/checkin", requireUser, async (c) => {
   const statusExpr = fee.feeStatus === "unpaid" ? "'pending'" : CAPACITY_STATUS;
   const row = await db
     .prepare(
-      `INSERT INTO registrations (id, match_day_id, player_id, status, source, fee_status, fee_amount, queued_at, created_at, updated_at)
-       SELECT ?2, ?1, ?3, ${statusExpr}, 'self', ?5, ?6, ?4, ?4, ?4
-         FROM match_days md WHERE md.id = ?1 AND md.status = 'checkin_open' AND md.checkin_deadline > ?4
+      `INSERT INTO registrations (id, match_day_id, player_id, status, source, fee_status, fee_amount, checked_in_late, queued_at, created_at, updated_at)
+       SELECT ?2, ?1, ?3, ${statusExpr}, 'self', ?5, ?6, CASE WHEN ?4 >= md.checkin_deadline THEN 1 ELSE 0 END, ?4, ?4, ?4
+         FROM match_days md WHERE md.id = ?1 AND md.status = 'checkin_open'
        ON CONFLICT (match_day_id, player_id) DO UPDATE SET
          status = CASE WHEN registrations.status IN ('withdrawn', 'unavailable')
                        THEN CASE WHEN registrations.fee_status IN ('paid', 'waived') THEN ${CAPACITY_STATUS} ELSE excluded.status END
@@ -558,6 +563,7 @@ matchDayRoutes.post("/matchdays/:id/checkin", requireUser, async (c) => {
          fee_status = CASE WHEN registrations.fee_status IN ('paid', 'waived') THEN registrations.fee_status ELSE excluded.fee_status END,
          fee_amount = CASE WHEN registrations.fee_status IN ('paid', 'waived') THEN registrations.fee_amount ELSE excluded.fee_amount END,
          queued_at = CASE WHEN registrations.status IN ('withdrawn', 'unavailable') THEN excluded.queued_at ELSE registrations.queued_at END,
+         checked_in_late = CASE WHEN registrations.status IN ('withdrawn', 'unavailable') THEN excluded.checked_in_late ELSE registrations.checked_in_late END,
          updated_at = excluded.updated_at
        RETURNING status`,
     )
@@ -565,6 +571,7 @@ matchDayRoutes.post("/matchdays/:id/checkin", requireUser, async (c) => {
     .first<{ status: string }>();
   if (!row) throw new HttpError(409, "Check-in is closed for this match day.");
   if (row.status === "rejected") throw new HttpError(409, "Your registration for this day was declined by an admin.");
+  if (row.status === "confirmed") await autoPlaceInTeam(c, dayId, me.id);
   return respondDetail(c, dayId);
 });
 
@@ -622,13 +629,7 @@ matchDayRoutes.post("/matchdays/:id/pitch-guests", requireAdmin, async (c) => {
   if (!["checkin_open", "locked", "in_progress"].includes(day.status)) throw new HttpError(409, "Guests can be added on the pitch only on an active match day.");
   if (loaded.sets.length === 0) throw new HttpError(409, "Publish teams first, then add guests on the pitch.");
 
-  const ratings = new Map(
-    (await all<{ id: string; skill_rating: number }>(db, "SELECT p.id, p.skill_rating FROM roster_entries r JOIN players p ON p.id = r.player_id WHERE r.match_day_id = ?", day.id)).map((r) => [r.id, r.skill_rating]),
-  );
-  const fills = loaded.sets.map((s) => {
-    const members = loaded.roster.filter((r) => r.set_id === s.id);
-    return { setId: s.id, idx: s.idx, size: members.length, totalRating: members.reduce((n, r) => n + (ratings.get(r.player_id) ?? 5), 0) };
-  });
+  const fills = await setFills(db, loaded);
   const confirmed = loaded.registrations.filter((r) => r.status === "confirmed").length;
   if (guestSlotsLeft(fills, day.team_size, day.capacity, confirmed) === 0) {
     throw new HttpError(409, `No guest spots left: every team has ${day.team_size} players or the day is at capacity.`);
@@ -716,10 +717,13 @@ matchDayRoutes.post("/matchdays/:id/unavailable", requireUser, async (c) => {
       db,
       `INSERT INTO registrations (id, match_day_id, player_id, status, source, queued_at, created_at, updated_at)
        SELECT ?2, ?1, ?3, 'unavailable', 'self', ?4, ?4, ?4
-         FROM match_days md WHERE md.id = ?1 AND md.status = 'checkin_open' AND md.checkin_deadline > ?4
+         FROM match_days md WHERE md.id = ?1 AND md.status = 'checkin_open'
        ON CONFLICT (match_day_id, player_id) DO UPDATE SET
          status = CASE WHEN registrations.status = 'rejected' THEN 'rejected' ELSE 'unavailable' END,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at
+       -- After the deadline, dropping out of a place you hold is a late withdrawal: not allowed.
+       WHERE registrations.status NOT IN ('confirmed', 'waitlist', 'pending')
+          OR EXISTS (SELECT 1 FROM match_days WHERE id = ?1 AND checkin_deadline > ?4)`,
       dayId,
       newId(),
       me.id,
@@ -734,7 +738,7 @@ matchDayRoutes.post("/matchdays/:id/unavailable", requireUser, async (c) => {
       me.id,
     ),
   ]);
-  if ((res[0]?.meta.changes ?? 0) === 0) throw new HttpError(409, "Availability is closed for this match day.");
+  if ((res[0]?.meta.changes ?? 0) === 0) throw new HttpError(409, "Availability is closed for this match day, or the deadline to drop out has passed.");
   return respondDetail(c, dayId);
 });
 
@@ -761,6 +765,7 @@ matchDayRoutes.post("/matchdays/:id/registrations", requireAdmin, async (c) => {
     .bind(day.id, newId(), player.id, now, fee.feeStatus, fee.amount)
     .first<{ status: string }>();
   await db.batch([auditStmt(c, { action: "registration.admin_add", entityType: "player", entityId: player.id, matchDayId: day.id, after: { status: row?.status } })]);
+  if (row?.status === "confirmed") await autoPlaceInTeam(c, day.id, player.id);
   return respondDetail(c, day.id);
 });
 
@@ -817,6 +822,7 @@ matchDayRoutes.post("/registrations/:regId/:action{approve|promote|reject|withdr
   if ((res[0]?.meta.changes ?? 0) === 0) {
     throw new HttpError(409, action === "promote" ? "No free place: the match day is full." : "The registration changed. Refresh and try again.");
   }
+  if (action === "approve" || action === "promote" || action === "restore") await autoPlaceInTeam(c, day.id, reg.player_id);
   return respondDetail(c, day.id);
 });
 

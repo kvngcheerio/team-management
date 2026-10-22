@@ -722,10 +722,48 @@ const WEEKDAYS = [
   { n: 7, short: "Sun" },
 ];
 
+/** The check-in reminder exactly as players receive it (addressed to you, for the next match day). */
+function EmailPreview({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { data, error, isLoading } = useQuery({
+    queryKey: ["email-preview"],
+    queryFn: () => api.get<{ to: string; subject: string; html: string; text: string; matchDayDate: string | null; emailFrom: string | null }>("/admin/email-preview"),
+    enabled: open,
+    staleTime: 0,
+  });
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-3 sm:items-center" role="dialog" aria-modal="true" aria-label="Email preview" onClick={onClose}>
+      <Card className="flex max-h-[90vh] w-full max-w-xl flex-col gap-3 p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="text-lg font-semibold">Check-in reminder</h2>
+          <Button size="sm" variant="ghost" onClick={onClose}>Close</Button>
+        </div>
+        {isLoading ? (
+          <Loading />
+        ) : error ? (
+          <ErrorBox error={error} />
+        ) : data ? (
+          <>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+              <dt className="text-muted">From</dt><dd className="break-all">{data.emailFrom ?? "— (EMAIL_FROM not set)"}</dd>
+              <dt className="text-muted">To</dt><dd className="break-all">{data.to}</dd>
+              <dt className="text-muted">Subject</dt><dd className="font-medium">{data.subject}</dd>
+            </dl>
+            <iframe title="Email body" sandbox="" srcDoc={data.html} className="min-h-[320px] w-full flex-1 rounded-xl border border-line bg-white" />
+            <p className="text-xs text-muted">
+              {data.matchDayDate ? `Shown for the next match day (${formatDate(data.matchDayDate)}).` : "No upcoming match day, so this uses sample details."} Sent on match day, 2 hours before kick-off, to players who haven't checked in or said they're unavailable.
+            </p>
+          </>
+        ) : null}
+      </Card>
+    </div>
+  );
+}
+
 function ScheduleTab() {
   const toast = useToast();
   const qc = useQueryClient();
-  const { data, isLoading } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string> }>("/admin/settings") });
+  const { data, isLoading } = useQuery({ queryKey: ["settings"], queryFn: () => api.get<{ settings: Record<string, string>; emailConfigured: boolean }>("/admin/settings") });
   const [f, setF] = useState<Record<string, string> | null>(null);
   useEffect(() => {
     if (data && !f) setF(data.settings);
@@ -733,6 +771,7 @@ function ScheduleTab() {
   const save = useMutation({
     mutationFn: () =>
       api.put("/admin/settings", {
+        checkin_reminders_enabled: f!.checkin_reminders_enabled ?? "1",
         match_weekdays: f!.match_weekdays ?? "",
         schedule_kickoff: f!.schedule_kickoff,
         schedule_open_days_before: f!.schedule_open_days_before,
@@ -743,6 +782,13 @@ function ScheduleTab() {
       qc.invalidateQueries({ queryKey: ["settings"] });
       toast("Schedule saved");
     },
+    onError: (e: Error) => toast(e.message, "error"),
+  });
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const testSend = useMutation({
+    mutationFn: () => api.post<{ to: string; provider: string; simulated: boolean }>("/admin/email-test", {}),
+    onSuccess: (r) =>
+      toast(r.simulated ? "Local dev: Cloudflare email is simulated, nothing was delivered. Add RESEND_API_KEY to .dev.vars to really send." : `Test email sent to ${r.to} via ${r.provider === "resend" ? "Resend" : "Cloudflare"}`),
     onError: (e: Error) => toast(e.message, "error"),
   });
   const run = useMutation({
@@ -792,8 +838,26 @@ function ScheduleTab() {
           <Field label="Kick-off"><Input type="time" value={f.schedule_kickoff ?? "07:00"} onChange={(e) => setF({ ...f, schedule_kickoff: e.target.value })} /></Field>
           <Field label="Create match days this many weeks ahead"><Input type="number" min={1} max={8} value={f.schedule_weeks_ahead ?? "2"} onChange={(e) => setF({ ...f, schedule_weeks_ahead: e.target.value })} /></Field>
           <Field label="Check-in opens (days before)"><Input type="number" min={0} max={14} value={f.schedule_open_days_before ?? "3"} onChange={(e) => setF({ ...f, schedule_open_days_before: e.target.value })} /></Field>
-          <Field label="Check-in closes (hours before kick-off)"><Input type="number" min={0} max={72} value={f.schedule_close_hours_before ?? "11"} onChange={(e) => setF({ ...f, schedule_close_hours_before: e.target.value })} /></Field>
+          <Field label="Check-in deadline (hours before kick-off)" hint="Players can still check in after it (marked late) until you close check-in."><Input type="number" min={0} max={72} value={f.schedule_close_hours_before ?? "11"} onChange={(e) => setF({ ...f, schedule_close_hours_before: e.target.value })} /></Field>
         </div>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-5 accent-pitch-700"
+            checked={(f.checkin_reminders_enabled ?? "1") === "1"}
+            onChange={(e) => setF({ ...f, checkin_reminders_enabled: e.target.checked ? "1" : "0" })}
+          />
+          <span>
+            Email check-in reminders
+            <span className="block text-muted">On match day, 2 hours before kick-off, players who haven't checked in or said they're unavailable get an email. Players can turn it off on their profile.</span>
+            {data && !data.emailConfigured && <span className="block text-ember">Email isn't configured on the server yet (EMAIL_FROM plus the EMAIL binding or RESEND_API_KEY).</span>}
+          </span>
+        </label>
+        <div className="-mt-3 flex flex-wrap gap-2 pl-7">
+          <Button size="sm" variant="secondary" onClick={() => setPreviewOpen(true)}>Preview email</Button>
+          <Button size="sm" variant="ghost" loading={testSend.isPending} onClick={() => testSend.mutate()}>Send me a test</Button>
+        </div>
+        <EmailPreview open={previewOpen} onClose={() => setPreviewOpen(false)} />
         <p className="text-sm text-muted">
           Venue, capacity, sets and players per set come from <Link to="/admin/settings" className="underline">Settings</Link>. Team sheets show at {f.team_sheet_time ?? "07:50"} on match day. Each day can still be edited or cancelled on its own.
         </p>

@@ -53,12 +53,12 @@ export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
             </Button>
           )}
           {me.feeStatus === "free" && <Badge tone="green">Free — you've paid 5 days this season</Badge>}
-          {me.canCheckIn && status !== "unavailable" && (
+          {me.canCheckIn && status !== "unavailable" && (!active || me.canWithdraw) && (
             <Button size={active ? "md" : "lg"} variant="secondary" className={active ? "" : "flex-1 sm:flex-none"} loading={unavailable.isPending} onClick={() => unavailable.mutate(undefined)}>
               {active ? "I can't make it any more" : "✗ Can't make it"}
             </Button>
           )}
-          {!me.canCheckIn && day.status === "checkin_open" && <span className="text-sm text-muted">The check-in deadline has passed.</span>}
+          {me.canCheckIn && !me.canWithdraw && <span className="text-sm text-muted">{active ? "The deadline has passed, so you can't drop out here — tell an admin." : "The check-in deadline has passed. You can still check in, but it's marked late."}</span>}
         </div>
       )}
     </div>

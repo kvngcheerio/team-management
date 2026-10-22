@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link, useParams } from "react-router";
 import { api } from "../api";
@@ -113,6 +113,11 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
   const transition = useDayMutation(day.id, (v: { to: string; reason?: string }) => api.post(`/matchdays/${day.id}/transition`, v), "Status updated");
   const start = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/start`), "Play started — rosters are locked");
   const finalize = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/finalize`), (d) => (d.alreadyFinalized ? "Already finalized" : "Match day finalized — points awarded"));
+  const remind = useMutation({
+    mutationFn: () => api.post<{ sent: number; failed: number }>(`/admin/matchdays/${day.id}/reminders`),
+    onSuccess: (r) => toast(r.sent || r.failed ? `Reminders sent to ${r.sent}${r.failed ? `, ${r.failed} failed` : ""}` : "Everyone has responded or was already reminded", r.failed && !r.sent ? "error" : undefined),
+    onError: (e: Error) => toast(e.message, "error"),
+  });
 
   const copyLink = async () => {
     try {
@@ -136,6 +141,7 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
       <div className="flex flex-wrap gap-2">
         {day.status === "draft" && <Button onClick={() => transition.mutate({ to: "checkin_open" })} loading={transition.isPending}>Open check-in</Button>}
         {day.status === "checkin_open" && <Button variant="secondary" onClick={() => transition.mutate({ to: "locked" })} loading={transition.isPending}>Close check-in</Button>}
+        {day.status === "checkin_open" && <Button variant="ghost" onClick={() => remind.mutate()} loading={remind.isPending} title="Email players who haven't checked in or said they're unavailable">Email reminder</Button>}
         {day.status === "locked" && <Button variant="secondary" onClick={() => transition.mutate({ to: "checkin_open" })}>Reopen check-in</Button>}
         {["checkin_open", "locked"].includes(day.status) && (
           <Link to={`/matchdays/${day.id}/teams`}>
@@ -356,6 +362,7 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
             {reg.displayName}
           </Link>
           {reg.kind === "guest" && <GuestBadge />}
+          {reg.late && <Badge tone="amber">Late check-in</Badge>}
           {reg.status !== "confirmed" && reg.status !== "waitlist" && <Badge>{REG_LABEL[reg.status]}</Badge>}
           {reg.feeStatus === "unpaid" && <Badge tone="red">Fee owed ₦{(reg.feeAmount ?? 0).toLocaleString()}</Badge>}
           {reg.feeStatus === "paid" && <Badge tone="green">Fee paid</Badge>}

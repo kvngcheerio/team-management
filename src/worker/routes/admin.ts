@@ -5,6 +5,9 @@ import type { AppEnv, Ctx } from "../env";
 import { randomToken, sha256Hex } from "../lib/crypto";
 import { all, atomic, auditStmt, first, guard, HttpError, nowIso, stmt } from "../lib/db";
 import { requireAdmin } from "../lib/guards";
+import { rateLimit } from "../lib/rate-limit";
+import { sendEmail } from "../lib/email";
+import { previewReminder, sendCheckinReminders } from "../lib/reminders";
 import { runSchedule } from "../lib/schedule";
 import { body, zId, zReason } from "../lib/validate";
 
@@ -36,6 +39,7 @@ const SETTINGS_KEYS = [
   "schedule_open_days_before",
   "schedule_close_hours_before",
   "schedule_weeks_ahead",
+  "checkin_reminders_enabled",
 ] as const;
 
 /** Settings safe to return to admins (the signup token is returned as a full URL instead). */
@@ -44,7 +48,7 @@ async function readSettings(c: Ctx) {
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const origin = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
   const { signup_token, ...rest } = map;
-  return { settings: rest, signupUrl: signup_token ? `${origin}/join/${signup_token}` : null };
+  return { settings: rest, signupUrl: signup_token ? `${origin}/join/${signup_token}` : null, emailConfigured: Boolean(c.env.EMAIL_FROM && (c.env.EMAIL || c.env.RESEND_API_KEY)) };
 }
 
 adminRoutes.get("/admin/settings", async (c) => c.json(await readSettings(c)));
@@ -77,6 +81,7 @@ adminRoutes.put("/admin/settings", async (c) => {
       schedule_open_days_before: z.coerce.number().int().min(0).max(14).optional(),
       schedule_close_hours_before: z.coerce.number().int().min(0).max(72).optional(),
       schedule_weeks_ahead: z.coerce.number().int().min(1).max(8).optional(),
+      checkin_reminders_enabled: z.enum(["0", "1"]).optional(),
     }),
   );
   if (input.timezone && !isValidTimeZone(input.timezone)) throw new HttpError(422, "Unknown timezone.");
@@ -227,5 +232,29 @@ adminRoutes.post("/admin/users/:id/link", async (c) => {
 /** Run the weekly schedule now (the cron also runs it daily). */
 adminRoutes.post("/admin/schedule/run", async (c) => {
   const result = await runSchedule(c.env.DB);
+  return c.json(result);
+});
+
+/** The check-in reminder as players will see it, addressed to the signed-in admin. */
+adminRoutes.get("/admin/email-preview", async (c) => {
+  const me = c.get("user")!;
+  return c.json({ ...(await previewReminder(c.env, me)), emailFrom: c.env.EMAIL_FROM ?? null });
+});
+
+/** Send that preview to the signed-in admin only, to check delivery and how it looks in a real inbox. */
+adminRoutes.post("/admin/email-test", async (c) => {
+  await rateLimit(c, "email-test", 5, 3600);
+  const me = c.get("user")!;
+  const { to, subject, html, text } = await previewReminder(c.env, me);
+  const result = await sendEmail(c.env, { to, subject: `[Test] ${subject}`, html, text });
+  if (!result.ok) throw new HttpError(422, `Couldn't send (${result.provider}): ${result.error}`);
+  // Local dev: Cloudflare's send_email binding is simulated and delivers nothing.
+  return c.json({ ok: true, provider: result.provider, to, simulated: c.env.APP_ENV === "development" && result.provider === "cloudflare" });
+});
+
+/** Email everyone who hasn't responded to this open match day (once per player; failed sends are retried). */
+adminRoutes.post("/admin/matchdays/:id/reminders", async (c) => {
+  const result = await sendCheckinReminders(c.env, { dayId: c.req.param("id") });
+  if (result.days === 0) throw new HttpError(409, "Check-in isn't open for this match day.");
   return c.json(result);
 });

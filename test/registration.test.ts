@@ -77,13 +77,31 @@ describe("registration capacity", () => {
     expect((await admin.patch(`/matchdays/${dayId}`, { capacity: 2 })).status).toBe(409);
   });
 
-  it("refuses check-in when closed or past the deadline", async () => {
+  it("refuses check-in when closed, and flags check-ins after the deadline as late", async () => {
     const day = await createMatchDay(admin, seasonId, { date: "2026-11-28", checkinDeadlineDate: "2026-11-27" });
-    expect((await members[0]!.client.post(`/matchdays/${day.day.id}/checkin`)).status).toBe(409);
-    // Deadline in the past (Oct 1 2026 is before "today" in tests).
-    const past = await createMatchDay(admin, seasonId, { date: "2026-10-10", checkinDeadlineDate: "2026-10-09" });
-    await admin.post(`/matchdays/${past.day.id}/transition`, { to: "checkin_open" });
-    expect((await members[0]!.client.post(`/matchdays/${past.day.id}/checkin`)).status).toBe(409);
+    expect((await members[0]!.client.post(`/matchdays/${day.day.id}/checkin`)).status).toBe(409); // still draft
+    await admin.post(`/matchdays/${day.day.id}/transition`, { to: "checkin_open" });
+    const onTime = await members[0]!.client.post(`/matchdays/${day.day.id}/checkin`);
+    expect(onTime.body.registrations.find((r: any) => r.playerId === members[0]!.playerId).late).toBe(false);
+
+    // Deadline in the past: check-in stays open (soft deadline) but is marked late.
+    const past = (await createMatchDay(admin, seasonId, { date: "2026-10-10", checkinDeadlineDate: "2026-10-09" })).day.id;
+    await admin.post(`/matchdays/${past}/transition`, { to: "checkin_open" });
+    const late = await members[0]!.client.post(`/matchdays/${past}/checkin`);
+    expect(late.status).toBe(200);
+    expect(late.body.me).toMatchObject({ registrationStatus: "confirmed", canCheckIn: true, canWithdraw: false });
+    const adminView = (await admin.get(`/matchdays/${past}`)).body;
+    expect(adminView.registrations.find((r: any) => r.playerId === members[0]!.playerId)).toMatchObject({ status: "confirmed", late: true });
+
+    // A late drop-out is still blocked (withdraw or "can't make it" with a place held)…
+    expect((await members[0]!.client.post(`/matchdays/${past}/withdraw`)).status).toBe(409);
+    expect((await members[0]!.client.post(`/matchdays/${past}/unavailable`)).status).toBe(409);
+    // …but someone without a place can still say they can't make it.
+    expect((await members[1]!.client.post(`/matchdays/${past}/unavailable`)).status).toBe(200);
+
+    // Once an admin closes check-in, nobody can check in.
+    await admin.post(`/matchdays/${past}/transition`, { to: "locked" });
+    expect((await members[2]!.client.post(`/matchdays/${past}/checkin`)).status).toBe(409);
   });
 
   it("rejects match days outside the season and deadlines after kickoff", async () => {

@@ -8,6 +8,7 @@ export interface Me {
     kind: "member" | "guest";
     approved: boolean;
     contactPhone: string | null;
+    emailReminders: boolean;
     avatarUrl: string | null;
     outstandingFines: number;
     membershipPaidUntil: string | null;
@@ -30,6 +31,7 @@ export interface Registration {
   source: "self" | "admin" | "guest_form";
   attended: boolean | null;
   queuedAt: string;
+  late: boolean;
   waitlistPosition: number | null;
   feeStatus?: FeeStatus;
   feeAmount?: number;
@@ -125,6 +127,7 @@ export interface MatchDayDetail {
     kind: string;
     registrationStatus: Registration["status"] | null;
     canCheckIn: boolean;
+    canWithdraw: boolean;
     approved: boolean;
     points: number | null;
     feeStatus: FeeStatus | null;

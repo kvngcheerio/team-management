@@ -14,7 +14,7 @@ export function formatInstant(iso: string, tz: string, opts: Intl.DateTimeFormat
 
 export function relativeDeadline(iso: string) {
   const ms = Date.parse(iso) - Date.now();
-  if (ms <= 0) return "closed";
+  if (ms <= 0) return "deadline passed (late check-in)";
   const h = Math.floor(ms / 3600_000);
   if (h >= 48) return `${Math.floor(h / 24)} days left`;
   if (h >= 1) return `${h}h left`;

@@ -23,9 +23,9 @@ viewRoutes.get("/me", async (c) => {
     first(db, "SELECT 1 FROM user WHERE role = 'admin' LIMIT 1"),
   ]);
   const player = user
-    ? await first<{ id: string; display_name: string; kind: "member" | "guest"; approved: number; avatar_updated_at: string | null; contact_phone: string | null; membership_paid_until: string | null }>(
+    ? await first<{ id: string; display_name: string; kind: "member" | "guest"; approved: number; avatar_updated_at: string | null; contact_phone: string | null; membership_paid_until: string | null; email_reminders: number }>(
         db,
-        "SELECT id, display_name, kind, approved, avatar_updated_at, contact_phone, membership_paid_until FROM players WHERE user_id = ?",
+        "SELECT id, display_name, kind, approved, avatar_updated_at, contact_phone, membership_paid_until, email_reminders FROM players WHERE user_id = ?",
         user.id,
       )
     : null;
@@ -41,6 +41,7 @@ viewRoutes.get("/me", async (c) => {
           kind: player.kind,
           approved: player.approved === 1,
           contactPhone: player.contact_phone,
+          emailReminders: player.email_reminders === 1,
           avatarUrl: player.avatar_updated_at ? `/api/players/${player.id}/avatar?v=${encodeURIComponent(player.avatar_updated_at)}` : null,
           outstandingFines: outstanding,
           membershipPaidUntil: player.membership_paid_until,

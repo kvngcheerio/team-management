@@ -34,8 +34,10 @@ const hash = (pw: string) => {
 let seed = 20261015;
 const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296);
 
-// Wipe previous demo data (local only).
-for (const t of ["wallet_transactions", "membership_payments", "votes", "polls", "ledger_entries", "cards", "payments", "announcements", "admin_invites", "player_avatars", "audit_log", "day_player_stats", "goal_events", "matches", "roster_entries", "sets", "registrations", "match_days", "season_final_standings", "seasons", "player_invites", "players", "session", "account", "verification", "user", "rate_limits"]) {
+// Wipe previous demo data (local only). Registrations and payments reference each other (guest fees),
+// so break that cycle first.
+out.push("UPDATE registrations SET fee_payment_id = NULL;", "UPDATE payments SET registration_id = NULL;");
+for (const t of ["email_log", "wallet_transactions", "membership_payments", "votes", "polls", "ledger_entries", "cards", "payments", "announcements", "admin_invites", "player_avatars", "audit_log", "day_player_stats", "goal_events", "matches", "roster_entries", "sets", "registrations", "match_days", "season_final_standings", "seasons", "player_invites", "players", "session", "account", "verification", "user", "rate_limits"]) {
   out.push(`DELETE FROM ${t};`);
 }
 out.push(`UPDATE settings SET value = 'Team Alpha' WHERE key = 'group_name';`, `UPDATE settings SET value = 'Astro Turf, Lekki Phase 1' WHERE key = 'default_venue';`);

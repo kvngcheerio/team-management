@@ -36,9 +36,9 @@ export default function MePage() {
   const toast = useToast();
   const navigate = useNavigate();
   const fileRef = useRef<HTMLInputElement>(null);
-  const [form, setForm] = useState({ displayName: "", contactPhone: "" });
+  const [form, setForm] = useState({ displayName: "", contactPhone: "", emailReminders: true });
   useEffect(() => {
-    if (me?.player) setForm({ displayName: me.player.displayName, contactPhone: me.player.contactPhone ?? "" });
+    if (me?.player) setForm({ displayName: me.player.displayName, contactPhone: me.player.contactPhone ?? "", emailReminders: me.player.emailReminders });
   }, [me?.player?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const upload = useMutation({
@@ -54,7 +54,7 @@ export default function MePage() {
     onSuccess: () => qc.invalidateQueries(),
   });
   const save = useMutation({
-    mutationFn: () => api.patch("/me/player", { displayName: form.displayName, contactPhone: form.contactPhone || null }),
+    mutationFn: () => api.patch("/me/player", { displayName: form.displayName, contactPhone: form.contactPhone || null, emailReminders: form.emailReminders }),
     onSuccess: () => {
       qc.invalidateQueries();
       toast("Profile saved");
@@ -113,6 +113,10 @@ export default function MePage() {
             <form className="grid gap-4 sm:grid-cols-2" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
               <Field label="Display name"><Input required maxLength={60} value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} /></Field>
               <Field label="Phone" hint="Only admins can see it."><Input type="tel" maxLength={30} value={form.contactPhone} onChange={(e) => setForm({ ...form, contactPhone: e.target.value })} /></Field>
+              <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                <input type="checkbox" className="size-5 accent-pitch-700" checked={form.emailReminders} onChange={(e) => setForm({ ...form, emailReminders: e.target.checked })} />
+                Email me on match day, 2 hours before kick-off, if I haven't checked in
+              </label>
               <div className="sm:col-span-2"><Button type="submit" loading={save.isPending}>Save</Button></div>
             </form>
           </Card>

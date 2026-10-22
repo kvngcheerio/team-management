@@ -5,6 +5,7 @@ import { todayInZone } from "../../shared/time";
 import type { AppEnv, Ctx } from "../env";
 import { accessSettings, myPlayerRow, referralCode, referralCreditStatement, walletBalance, walletDebitStatements } from "../lib/access";
 import { randomToken } from "../lib/crypto";
+import { autoPlaceInTeam } from "../lib/matchday";
 import { all, atomic, auditStmt, first, getSetting, guard, HttpError, newId, nowIso, stmt } from "../lib/db";
 import { isAdmin, requireAdmin, requireUser } from "../lib/guards";
 import { body, zId, zReason } from "../lib/validate";
@@ -155,6 +156,7 @@ async function startCheckout(c: Ctx, x: Omit<Completion, "paymentId" | "external
       ...(await completionStatements(c, { ...x, paymentId: null, external: 0, wallet })),
       auditStmt(c, { action: `payment.${x.purpose}.wallet`, entityType: "player", entityId: x.playerId, after: { wallet } }),
     ], "That was already paid, or your wallet balance changed. Refresh and try again.");
+    if (x.purpose === "guest_fee") await placeAfterGuestFee(c, x.registrationId);
     return { completed: true as const, wallet, external: 0 };
   }
   const id = newId();
@@ -314,6 +316,14 @@ async function completePayment(c: Ctx, p: PaymentRow, fromStatuses: string[], ac
     ],
     "Something changed since checkout started (already paid, waived, or wallet balance changed).",
   );
+  if (p.purpose === "guest_fee") await placeAfterGuestFee(c, p.registration_id);
+}
+
+/** A paid guest fee can confirm a pending guest; if teams are already out, they join one. */
+async function placeAfterGuestFee(c: Ctx, registrationId: string | null | undefined) {
+  if (!registrationId) return;
+  const reg = await first<{ match_day_id: string; player_id: string }>(c.env.DB, "SELECT match_day_id, player_id FROM registrations WHERE id = ?", registrationId);
+  if (reg) await autoPlaceInTeam(c, reg.match_day_id, reg.player_id);
 }
 
 paymentRoutes.get("/payments/:id", requireUser, async (c) => {
@@ -515,6 +525,7 @@ paymentRoutes.post("/registrations/:id/fee/:action{mark-paid|waive}", requireAdm
   ];
   if (action === "mark-paid") statements.push(await referralCreditStatement(db, reg.player_id));
   await atomic(db, statements);
+  await autoPlaceInTeam(c, reg.match_day_id, reg.player_id);
   return c.json({ ok: true });
 });
 

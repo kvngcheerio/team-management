@@ -4,6 +4,7 @@ import { allowedOrigins, createAuth } from "./auth";
 import type { AppEnv, SessionUser } from "./env";
 import { HttpError } from "./lib/db";
 import { rateLimit } from "./lib/rate-limit";
+import { sendCheckinReminders } from "./lib/reminders";
 import { runSchedule } from "./lib/schedule";
 import { adminRoutes } from "./routes/admin";
 import { announcementRoutes } from "./routes/announcements";
@@ -83,6 +84,8 @@ app.route("/", paymentRoutes);
 app.route("/", announcementRoutes);
 app.route("/", adminRoutes);
 
+const DAILY_CRON = "0 5 * * *";
+
 app.notFound((c) => c.json({ error: "Not found" }, 404));
 
 app.onError((err, c) => {
@@ -95,8 +98,12 @@ app.onError((err, c) => {
 
 export default {
   fetch: app.fetch,
-  /** Daily cron (see wrangler.jsonc triggers): create scheduled match days and open check-in. */
-  async scheduled(_event: ScheduledController, env: AppEnv["Bindings"], ctx: ExecutionContext) {
-    ctx.waitUntil(runSchedule(env.DB).then((r) => console.log("schedule", JSON.stringify(r))));
+  /**
+   * Crons (see wrangler.jsonc triggers): daily 05:00 UTC creates scheduled match days and opens check-in;
+   * every 15 minutes sends match-day check-in reminders 2 hours before kick-off.
+   */
+  async scheduled(event: ScheduledController, env: AppEnv["Bindings"], ctx: ExecutionContext) {
+    if (event.cron === DAILY_CRON) ctx.waitUntil(runSchedule(env.DB).then((r) => console.log("schedule", JSON.stringify(r))));
+    else ctx.waitUntil(sendCheckinReminders(env).then((r) => r.days > 0 && console.log("reminders", JSON.stringify(r))));
   },
 } satisfies ExportedHandler<AppEnv["Bindings"]>;

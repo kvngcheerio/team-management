@@ -29,11 +29,16 @@
     }
   ],
 	// Daily at 05:00 UTC (06:00 WAT): create scheduled match days and open check-in.
-	"triggers": { "crons": ["0 5 * * *"] },
+	// Every 15 minutes: email check-in reminders on match day, 2 hours before kick-off.
+	"triggers": { "crons": ["0 5 * * *", "*/15 * * * *"] },
+	// Cloudflare Email Service (Workers Paid). The EMAIL_FROM domain must be onboarded in Email Service.
+	"send_email": [{ "name": "EMAIL" }],
 	"vars": {
 		// Public, non-secret configuration. Secrets go in `wrangler secret put` / .dev.vars.
 		"APP_ENV": "production",
 		// Extra origins allowed to sign in, besides BETTER_AUTH_URL (the main/custom domain).
-		"APP_ORIGINS": "https://matchday.control-f8d.workers.dev"
+		"APP_ORIGINS": "https://matchday.control-f8d.workers.dev",
+		// Sender for reminder emails; the domain must be onboarded in Cloudflare Email Service (or verified in Resend).
+		"EMAIL_FROM": "Matchday <noreply@pluvialhq.com>"
 	}
 }

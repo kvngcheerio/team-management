@@ -390,3 +390,19 @@ describe("weekly schedule", () => {
     expect(scheduledDates("2026-10-19", 7, [])).toEqual([]);
   });
 });
+
+import { isLateCheckIn, lateCheckInAllowed, selfCheckInOpen } from "../src/shared/rules";
+
+describe("soft check-in deadline", () => {
+  const deadline = "2026-11-06T18:00:00.000Z";
+  it("allows check-in while open, flags it late from the deadline on", () => {
+    expect(lateCheckInAllowed("checkin_open")).toBe(true);
+    expect(lateCheckInAllowed("locked")).toBe(false);
+    expect(isLateCheckIn(deadline, new Date("2026-11-06T17:59:59Z"))).toBe(false);
+    expect(isLateCheckIn(deadline, new Date("2026-11-06T18:00:00Z"))).toBe(true);
+  });
+  it("still closes self-withdrawal at the deadline", () => {
+    expect(selfCheckInOpen("checkin_open", deadline, new Date("2026-11-06T17:00:00Z"))).toBe(true);
+    expect(selfCheckInOpen("checkin_open", deadline, new Date("2026-11-06T19:00:00Z"))).toBe(false);
+  });
+});

@@ -420,7 +420,11 @@ function looksLikeImage(b: Uint8Array, type: string): boolean {
 playerRoutes.patch("/me/player", requireUser, async (c) => {
   const input = await body(
     c,
-    z.object({ displayName: zName.optional(), contactPhone: z.string().trim().max(30).regex(/^[+\d\s()-]*$/, "Enter a valid phone number").nullable().optional() }),
+    z.object({
+      displayName: zName.optional(),
+      contactPhone: z.string().trim().max(30).regex(/^[+\d\s()-]*$/, "Enter a valid phone number").nullable().optional(),
+      emailReminders: z.boolean().optional(),
+    }),
   );
   const db = c.env.DB;
   const p = await first<PlayerRow & { email: string | null }>(db, "SELECT p.*, u.email FROM players p LEFT JOIN user u ON u.id = p.user_id WHERE p.user_id = ?", c.get("user")!.id);
@@ -428,9 +432,10 @@ playerRoutes.patch("/me/player", requireUser, async (c) => {
   await atomic(db, [
     stmt(
       db,
-      "UPDATE players SET display_name = ?, contact_phone = ?, updated_at = ? WHERE id = ?",
+      "UPDATE players SET display_name = ?, contact_phone = ?, email_reminders = COALESCE(?, email_reminders), updated_at = ? WHERE id = ?",
       input.displayName ?? p.display_name,
       input.contactPhone === undefined ? p.contact_phone : input.contactPhone || null,
+      input.emailReminders === undefined ? null : input.emailReminders ? 1 : 0,
       nowIso(),
       p.id,
     ),
