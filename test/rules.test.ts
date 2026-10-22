@@ -155,6 +155,35 @@ describe("awarding points", () => {
     expect(pts).toEqual(["a1", "b1", "b2"]);
   });
 
+  it("awards placement points: 3/2/1 with four sets, 3/1/0 with three", () => {
+    const roster: RosterEntry[] = ["A", "B", "C", "D"].map((setId) => ({ playerId: setId.toLowerCase(), setId, memberAtLock: true }));
+    const attendance = { a: true, b: true, c: true, d: true };
+    const pts = (state: DayState) => Object.fromEntries(computeDayStats(state).stats.map((s) => [s.playerId, s.points]));
+    const four = [m("A", "B", 1, 0), m("A", "C", 1, 0), m("A", "D", 1, 0), m("B", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0)];
+    const base = { tiePolicy: "shared" as const, goals: [], roster, attendance };
+    expect(pts({ ...base, setIds: ["A", "B", "C", "D"], matches: four })).toEqual({ a: 3, b: 2, c: 1, d: 0 });
+    const dw = Object.fromEntries(computeDayStats({ ...base, setIds: ["A", "B", "C", "D"], matches: four }).stats.map((s) => [s.playerId, s.dailyWin]));
+    expect(dw).toEqual({ a: true, b: false, c: false, d: false });
+
+    const three = [m("A", "B", 1, 0), m("A", "C", 1, 0), m("B", "C", 1, 0)];
+    const r3 = roster.slice(0, 3);
+    expect(pts({ ...base, roster: r3, setIds: ["A", "B", "C"], matches: three })).toEqual({ a: 3, b: 1, c: 0 });
+  });
+
+  it("shares a position (and its points) when sets are level on wins", () => {
+    const roster: RosterEntry[] = ["A", "B", "C", "D"].map((setId) => ({ playerId: setId.toLowerCase(), setId, memberAtLock: true }));
+    const base = { tiePolicy: "shared" as const, goals: [], roster, attendance: { a: true, b: true, c: true, d: true }, setIds: ["A", "B", "C", "D"] };
+    const pts = (matches: MatchResult[]) => Object.fromEntries(computeDayStats({ ...base, matches }).stats.map((s) => [s.playerId, s.points]));
+    // B and C level for 2nd: both get 2; D is 4th.
+    expect(pts([m("A", "B", 1, 0), m("A", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0)])).toEqual({ a: 3, b: 2, c: 2, d: 0 });
+    // A and B share 1st: both get 3; C is 3rd.
+    expect(pts([m("A", "C", 1, 0), m("A", "D", 1, 0), m("B", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0)])).toEqual({ a: 3, b: 3, c: 1, d: 0 });
+    // Playoff policy: the playoff loser finishes 2nd.
+    const playoff = [m("A", "C", 1, 0), m("A", "D", 1, 0), m("B", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0), m("B", "A", 1, 0, { isPlayoff: true })];
+    const st = computeDayStats({ ...base, tiePolicy: "playoff", matches: playoff }).stats;
+    expect(Object.fromEntries(st.map((s) => [s.playerId, s.points]))).toEqual({ a: 2, b: 3, c: 1, d: 0 });
+  });
+
   it("awards no points when there is no winner", () => {
     const state = dayState({ matches: [{ ...m("A", "B", 0, 0), id: "x1" }], goals: [] });
     expect(computeDayStats(state).stats.every((s) => s.points === 0)).toBe(true);

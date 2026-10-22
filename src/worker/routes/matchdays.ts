@@ -4,6 +4,7 @@ import {
   balancedTeams,
   canTransition,
   computeSetTable,
+  daySetPlacements,
   determineDailyWinner,
   finalizationIssues,
   isDateInSeason,
@@ -105,6 +106,7 @@ export async function buildDetail(c: Ctx, loaded: LoadedDay) {
   const state = toDayState(loaded);
   const table = computeSetTable(state.setIds, state.matches);
   const winner = determineDailyWinner(state.setIds, state.matches, state.tiePolicy);
+  const placements = daySetPlacements(state.setIds, state.matches, winner);
   const stats =
     day.status === "finalized"
       ? await all<{ player_id: string; points: number; eligible: number; daily_win: number; goals: number; assists: number }>(
@@ -186,6 +188,7 @@ export async function buildDetail(c: Ctx, loaded: LoadedDay) {
       color: s.color,
       isDailyWinner: day.status === "finalized" ? s.is_daily_winner === 1 : winner.status === "decided" && winner.winnerSetIds.includes(s.id),
       record: table.find((t) => t.setId === s.id),
+      placement: placements.find((p) => p.setId === s.id),
       players: roster
         .filter((r) => r.set_id === s.id)
         .map((r) => {

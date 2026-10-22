@@ -5,7 +5,7 @@ import { useDayMutation } from "../hooks";
 import type { Match, MatchDayDetail, TeamSet } from "../types";
 import type { StandingRow } from "../../shared/rules";
 import { useQuery } from "@tanstack/react-query";
-import { formatMoney } from "../../shared/rules";
+import { formatMoney, placementPoints } from "../../shared/rules";
 import { useCheckout } from "./account";
 import type { Player } from "../types";
 import { Avatar, Badge, Button, Card, CardIcon, cx, GuestBadge, SetChip } from "./ui";
@@ -117,7 +117,8 @@ export function TeamsGrid({ detail, showAttendance }: { detail: MatchDayDetail; 
 
 export function SetTable({ detail }: { detail: MatchDayDetail }) {
   const gd = (s: TeamSet) => (s.record?.goalsFor ?? 0) - (s.record?.goalsAgainst ?? 0);
-  const rows = [...detail.sets].sort((a, b) => (b.record?.wins ?? 0) - (a.record?.wins ?? 0) || gd(b) - gd(a));
+  const pos = (s: TeamSet) => s.placement?.position ?? Infinity;
+  const rows = [...detail.sets].sort((a, b) => pos(a) - pos(b) || (b.record?.wins ?? 0) - (a.record?.wins ?? 0) || gd(b) - gd(a));
   return (
     <Card className="overflow-x-auto">
       <table className="num w-full text-left text-sm">
@@ -125,7 +126,7 @@ export function SetTable({ detail }: { detail: MatchDayDetail }) {
         <thead className="text-xs text-muted">
           <tr className="border-b border-line">
             <th className="px-4 py-3 font-normal">Set</th>
-            {["P", "W", "D", "L", "GF", "GA"].map((h) => (
+            {["P", "W", "D", "L", "GF", "GA", "Pts"].map((h) => (
               <th key={h} className="px-2 py-3 text-center font-normal">
                 {h}
               </th>
@@ -144,6 +145,9 @@ export function SetTable({ detail }: { detail: MatchDayDetail }) {
               <td className="px-2 text-center">{s.record?.losses ?? 0}</td>
               <td className="px-2 text-center">{s.record?.goalsFor ?? 0}</td>
               <td className="px-2 text-center">{s.record?.goalsAgainst ?? 0}</td>
+              <td className="px-2 text-center font-medium text-pitch-800" title="League points for each eligible player in this set">
+                {s.placement?.points ?? 0}
+              </td>
             </tr>
           ))}
         </tbody>
@@ -214,6 +218,14 @@ export function MatchesList({ detail }: { detail: MatchDayDetail }) {
   );
 }
 
+/** "1st +3 · 2nd +2 · 3rd +1": league points each eligible player earns by set placement. */
+function placementSummary(detail: MatchDayDetail) {
+  const ord = ["1st", "2nd", "3rd"];
+  const pts = placementPoints(detail.sets.length).filter((p) => p > 0);
+  if (pts.length === 1) return `eligible players earn ${pts[0]} league points`;
+  return `league points per eligible player: ${pts.map((p, i) => `${ord[i]} +${p}`).join(" · ")}`;
+}
+
 export function WinnerBanner({ detail }: { detail: MatchDayDetail }) {
   const w = detail.winner;
   const finalized = detail.day.status === "finalized";
@@ -229,7 +241,7 @@ export function WinnerBanner({ detail }: { detail: MatchDayDetail }) {
           {w.method === "playoff" && <span className="text-muted"> — via playoff</span>}
         </div>
         <div className="relative text-sm text-muted">
-          {w.maxWins} match win{w.maxWins === 1 ? "" : "s"} · eligible players earn 3 league points{finalized ? "" : " when finalized"}
+          {w.maxWins} match win{w.maxWins === 1 ? "" : "s"} · {placementSummary(detail)}{finalized ? "" : " when finalized"}
         </div>
       </div>
     );

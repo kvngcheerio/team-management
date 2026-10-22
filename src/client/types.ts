@@ -1,4 +1,4 @@
-import type { DailyWinnerResult, FinalizationIssue, MatchDayStatus, SetRecord, StandingRow } from "../shared/rules";
+import type { DailyWinnerResult, FinalizationIssue, MatchDayStatus, SetPlacement, SetRecord, StandingRow } from "../shared/rules";
 
 export interface Me {
   user: { id: string; name: string; email: string; role: "admin" | "member" } | null;
@@ -58,6 +58,7 @@ export interface TeamSet {
   color: string;
   isDailyWinner: boolean;
   record?: SetRecord;
+  placement?: SetPlacement;
   players: RosterPlayer[];
 }
 

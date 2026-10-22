@@ -205,7 +205,7 @@ function AdminControls({ detail }: { detail: MatchDayDetail }) {
         onClose={() => setConfirm(null)}
         onConfirm={() => finalize.mutate(undefined, { onSettled: () => setConfirm(null) })}
       >
-        This computes the daily winner and awards 3 league points to each eligible player in the winning set. Later changes need an audited correction.
+        This computes the daily winner and awards league points by set placement (with 4 sets: 3/2/1; with 3 sets: 3/1/0) to each eligible player. Later changes need an audited correction.
       </ConfirmDialog>
       <ConfirmDialog
         open={confirm === "cancel"}

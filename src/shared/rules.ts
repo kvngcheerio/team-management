@@ -13,6 +13,16 @@
 
 /** League points each eligible player in a daily-winning set receives, once per match day. */
 export const POINTS_PER_DAILY_WIN = 3;
+
+/**
+ * League points by finishing position (index 0 = 1st), depending on how many sets played that day.
+ * 4+ sets: 3/2/1; 3 sets: 3/1/0; 2 sets: 3/0.
+ */
+export function placementPoints(setCount: number): number[] {
+  if (setCount >= 4) return [POINTS_PER_DAILY_WIN, 2, 1];
+  if (setCount === 3) return [POINTS_PER_DAILY_WIN, 1];
+  return [POINTS_PER_DAILY_WIN];
+}
 export const SEASON_LENGTH_MONTHS = 6;
 export const DEFAULT_TIMEZONE = "Africa/Lagos";
 
@@ -24,10 +34,10 @@ export type MatchDayStatus = "draft" | "checkin_open" | "locked" | "in_progress"
 export const RULES_SUMMARY = [
   "A match day is a session of several short matches between sets (teams picked for that day).",
   "The set with the most match wins that day is the daily winner.",
-  `Each eligible player in the daily-winning set earns ${POINTS_PER_DAILY_WIN} league points — once per match day, no matter how many matches the set won. Everyone else earns 0.`,
-  "If sets tie on wins they share first place and each of their eligible players earns 3 points — unless the admin chose a playoff for that day, in which case a recorded playoff match decides it.",
+  "League points go by where your set finishes that day (most match wins first), once per match day. With 4 sets: 1st 3, 2nd 2, 3rd 1, 4th 0. With 3 sets: 1st 3, 2nd 1, 3rd 0. With 2 sets: winner 3.",
+  "Sets level on wins share the position and its points. A tie for first is shared too — unless the admin chose a playoff for that day, in which case a recorded playoff match decides it (the playoff loser finishes 2nd).",
   "If no set wins a single match (all draws), there is no daily winner and nobody earns points.",
-  "Eligible = in the winning set's locked roster, attendance confirmed, and a member when play started. Guests can score and assist but earn no league points.",
+  "Eligible = in the set's locked roster, attendance confirmed, and a member when play started. Guests can score and assist but earn no league points.",
   "Converting a guest to a member applies from the next roster lock onwards (prospective).",
   "League table order: points, then daily wins, then goals, then assists. Players level on all four share the position.",
   "Seasons run six calendar months between explicit start and end dates (timezone Africa/Lagos by default).",
@@ -306,25 +316,52 @@ export function finalizationIssues(state: DayState): FinalizationIssue[] {
   return issues;
 }
 
+export interface SetPlacement {
+  setId: string;
+  /** Finishing position (1 = daily winner); sets level on wins share it. Null when there's no winner. */
+  position: number | null;
+  points: number;
+}
+
+/**
+ * Finishing positions for the day. The daily winner(s) are 1st; every other set is placed by regular
+ * match wins below them, sharing a position (and its points) when level (1, 2, 2, 4 …). No decided
+ * winner → no positions and no points.
+ */
+export function daySetPlacements(setIds: string[], matches: MatchResult[], winner: DailyWinnerResult): SetPlacement[] {
+  if (winner.status !== "decided") return setIds.map((setId) => ({ setId, position: null, points: 0 }));
+  const winners = new Set(winner.winnerSetIds);
+  const wins = new Map(computeSetTable(setIds, matches).map((r) => [r.setId, r.wins]));
+  const table = placementPoints(setIds.length);
+  return setIds.map((setId) => {
+    const position = winners.has(setId)
+      ? 1
+      : winners.size + setIds.filter((o) => !winners.has(o) && wins.get(o)! > wins.get(setId)!).length + 1;
+    return { setId, position, points: table[position - 1] ?? 0 };
+  });
+}
+
 export interface DayPlayerStat {
   playerId: string;
   setId: string;
   attended: boolean;
   eligible: boolean;
   dailyWin: boolean;
-  points: 0 | 3;
+  points: number;
   goals: number;
   assists: number;
   ownGoals: number;
 }
 
 /**
- * Per-player records for one match day. Points are awarded once per player per day:
- * 3 when the player is in a winning set's roster, attended, and was a member at roster lock.
+ * Per-player records for one match day. Points are awarded once per player per day: their set's
+ * placement points (`daySetPlacements`) when they're in its roster, attended, and were a member at
+ * roster lock. `dailyWin` marks the winning set only.
  */
 export function computeDayStats(state: DayState): { winner: DailyWinnerResult; stats: DayPlayerStat[] } {
   const winner = determineDailyWinner(state.setIds, state.matches, state.tiePolicy);
   const winners = new Set(winner.status === "decided" ? winner.winnerSetIds : []);
+  const setPoints = new Map(daySetPlacements(state.setIds, state.matches, winner).map((p) => [p.setId, p.points]));
   const countedMatches = new Set(state.matches.filter((m) => m.status === "completed").map((m) => m.id));
   const tally = new Map<string, { goals: number; assists: number; ownGoals: number }>();
   const bump = (id: string, key: "goals" | "assists" | "ownGoals") => {
@@ -344,15 +381,16 @@ export function computeDayStats(state: DayState): { winner: DailyWinnerResult; s
     if (seen.has(r.playerId)) continue; // defensive: a player can only be in one set
     seen.add(r.playerId);
     const attended = state.attendance[r.playerId] === true;
-    const eligible = attended && r.memberAtLock === true && winners.has(r.setId);
+    const points = setPoints.get(r.setId) ?? 0;
+    const eligible = attended && r.memberAtLock === true && points > 0;
     const t = tally.get(r.playerId) ?? { goals: 0, assists: 0, ownGoals: 0 };
     stats.push({
       playerId: r.playerId,
       setId: r.setId,
       attended,
       eligible,
-      dailyWin: eligible,
-      points: eligible ? POINTS_PER_DAILY_WIN : 0,
+      dailyWin: eligible && winners.has(r.setId),
+      points: eligible ? points : 0,
       goals: t.goals,
       assists: t.assists,
       ownGoals: t.ownGoals,
