@@ -1,5 +1,6 @@
 import { env } from "cloudflare:workers";
 import { beforeAll, describe, expect, it } from "vitest";
+import { sendEmail } from "../src/worker/lib/email";
 import { sendCheckinReminders } from "../src/worker/lib/reminders";
 import { Client, createMatchDay, createPlayer, createSeason, setupAdmin } from "./helpers";
 
@@ -108,15 +109,35 @@ describe("check-in reminder emails", () => {
     expect(await sendCheckinReminders(fakeMailer().env, { now: new Date("2026-12-12T05:00:00Z") })).toMatchObject({ days: 0, sent: 0 });
   });
 
-  it("lets admins send reminders for an open day through the real binding", async () => {
+  it("lets admins send reminders for an open day (recorded as failed when no provider is configured)", async () => {
     const day = (await createMatchDay(admin, seasonId, { date: "2026-11-28", checkinDeadlineDate: "2026-11-27" })).day.id;
     expect((await admin.post(`/admin/matchdays/${day}/reminders`)).status).toBe(409); // still draft
     await admin.post(`/matchdays/${day}/transition`, { to: "checkin_open" });
     expect((await players[0]!.client.post(`/admin/matchdays/${day}/reminders`)).status).toBe(403);
     const res = await admin.post(`/admin/matchdays/${day}/reminders`);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ days: 1, failed: 0, sent: 4 });
-    expect((await admin.post(`/admin/matchdays/${day}/reminders`)).body).toMatchObject({ sent: 0 });
+    expect(res.body).toMatchObject({ days: 1, sent: 0, failed: 4 }); // the test worker has no EMAIL binding or Resend key
+    expect((await admin.post("/admin/email-test")).status).toBe(422);
+  });
+
+  it("sends through Resend, and falls back to it when Cloudflare rejects", async () => {
+    const calls: { url: string; auth: string | null; body: any }[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), auth: new Headers(init?.headers).get("Authorization"), body: JSON.parse(String(init?.body)) });
+      return new Response(JSON.stringify({ id: "re_123" }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const msg = { to: "p@example.com", subject: "Hi", html: "<p>Hi</p>", text: "Hi" };
+      expect(await sendEmail({ EMAIL_FROM: "Matchday <noreply@example.com>", RESEND_API_KEY: "re_key" }, msg)).toEqual({ ok: true, provider: "resend" });
+      expect(calls[0]).toMatchObject({ url: "https://api.resend.com/emails", auth: "Bearer re_key", body: { from: "Matchday <noreply@example.com>", to: ["p@example.com"], subject: "Hi" } });
+
+      const broken = fakeMailer(true).env.EMAIL;
+      expect(await sendEmail({ EMAIL: broken, EMAIL_FROM: "x@example.com", RESEND_API_KEY: "re_key" }, msg)).toEqual({ ok: true, provider: "resend" });
+      expect(calls).toHaveLength(2);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 
   it("previews the reminder for admins only, worded as at send time", async () => {
