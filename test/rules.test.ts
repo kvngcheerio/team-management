@@ -170,12 +170,14 @@ describe("awarding points", () => {
     expect(pts({ ...base, roster: r3, setIds: ["A", "B", "C"], matches: three })).toEqual({ a: 3, b: 1, c: 0 });
   });
 
-  it("shares a position (and its points) when sets are level on wins", () => {
+  it("splits sets level on wins by goal difference, sharing only when that's level too", () => {
     const roster: RosterEntry[] = ["A", "B", "C", "D"].map((setId) => ({ playerId: setId.toLowerCase(), setId, memberAtLock: true }));
     const base = { tiePolicy: "shared" as const, goals: [], roster, attendance: { a: true, b: true, c: true, d: true }, setIds: ["A", "B", "C", "D"] };
     const pts = (matches: MatchResult[]) => Object.fromEntries(computeDayStats({ ...base, matches }).stats.map((s) => [s.playerId, s.points]));
-    // B and C level for 2nd: both get 2; D is 4th.
+    // B and C level on wins and goal difference: both 2nd with 2 points; D is 4th.
     expect(pts([m("A", "B", 1, 0), m("A", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0)])).toEqual({ a: 3, b: 2, c: 2, d: 0 });
+    // Level on wins, split by goal difference: C (+2) is 2nd, B (0) 3rd.
+    expect(pts([m("A", "B", 1, 0), m("A", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 3, 0)])).toEqual({ a: 3, b: 1, c: 2, d: 0 });
     // A and B share 1st: both get 3; C is 3rd.
     expect(pts([m("A", "C", 1, 0), m("A", "D", 1, 0), m("B", "C", 1, 0), m("B", "D", 1, 0), m("C", "D", 1, 0)])).toEqual({ a: 3, b: 3, c: 1, d: 0 });
     // Playoff policy: the playoff loser finishes 2nd.

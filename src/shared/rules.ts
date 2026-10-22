@@ -35,7 +35,7 @@ export const RULES_SUMMARY = [
   "A match day is a session of several short matches between sets (teams picked for that day).",
   "The set with the most match wins that day is the daily winner.",
   "League points go by where your set finishes that day (most match wins first), once per match day. With 4 sets: 1st 3, 2nd 2, 3rd 1, 4th 0. With 3 sets: 1st 3, 2nd 1, 3rd 0. With 2 sets: winner 3.",
-  "Sets level on wins share the position and its points. A tie for first is shared too — unless the admin chose a playoff for that day, in which case a recorded playoff match decides it (the playoff loser finishes 2nd).",
+  "Below first, sets level on wins are split by goal difference; if that's level too they share the position and its points. A tie on wins for first is shared — unless the admin chose a playoff for that day, in which case a recorded playoff match decides it (the playoff loser finishes 2nd).",
   "If no set wins a single match (all draws), there is no daily winner and nobody earns points.",
   "Eligible = in the set's locked roster, attendance confirmed, and a member when play started. Guests can score and assist but earn no league points.",
   "Converting a guest to a member applies from the next roster lock onwards (prospective).",
@@ -324,19 +324,22 @@ export interface SetPlacement {
 }
 
 /**
- * Finishing positions for the day. The daily winner(s) are 1st; every other set is placed by regular
- * match wins below them, sharing a position (and its points) when level (1, 2, 2, 4 …). No decided
- * winner → no positions and no points.
+ * Finishing positions for the day. The daily winner(s) are 1st; every other set is placed below them
+ * by regular match wins, then goal difference, sharing a position (and its points) only when level on
+ * both (1, 2, 2, 4 …). No decided winner → no positions and no points.
  */
 export function daySetPlacements(setIds: string[], matches: MatchResult[], winner: DailyWinnerResult): SetPlacement[] {
   if (winner.status !== "decided") return setIds.map((setId) => ({ setId, position: null, points: 0 }));
   const winners = new Set(winner.winnerSetIds);
-  const wins = new Map(computeSetTable(setIds, matches).map((r) => [r.setId, r.wins]));
+  const rec = new Map(computeSetTable(setIds, matches).map((r) => [r.setId, r]));
+  const ahead = (o: string, s: string) => {
+    const a = rec.get(o)!;
+    const b = rec.get(s)!;
+    return a.wins !== b.wins ? a.wins > b.wins : a.goalsFor - a.goalsAgainst > b.goalsFor - b.goalsAgainst;
+  };
   const table = placementPoints(setIds.length);
   return setIds.map((setId) => {
-    const position = winners.has(setId)
-      ? 1
-      : winners.size + setIds.filter((o) => !winners.has(o) && wins.get(o)! > wins.get(setId)!).length + 1;
+    const position = winners.has(setId) ? 1 : winners.size + setIds.filter((o) => !winners.has(o) && ahead(o, setId)).length + 1;
     return { setId, position, points: table[position - 1] ?? 0 };
   });
 }
