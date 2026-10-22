@@ -8,7 +8,7 @@ import { emailButton, emailLayout } from "./email-layout";
 /** Reminders go out on match day, this long before kick-off (the reminder cron runs every 15 minutes). */
 export const REMINDER_LEAD_MS = 2 * 3600_000;
 
-type ReminderEnv = Pick<Bindings, "DB" | "EMAIL" | "EMAIL_FROM" | "RESEND_API_KEY" | "BETTER_AUTH_URL"> & { APP_ENV?: string };
+type ReminderEnv = Pick<Bindings, "DB" | "EMAIL_FROM" | "RESEND_API_KEY" | "BETTER_AUTH_URL">;
 
 interface DayRow {
   id: string;

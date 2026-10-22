@@ -48,7 +48,7 @@ async function readSettings(c: Ctx) {
   const map = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const origin = c.env.BETTER_AUTH_URL || new URL(c.req.url).origin;
   const { signup_token, ...rest } = map;
-  return { settings: rest, signupUrl: signup_token ? `${origin}/join/${signup_token}` : null, emailConfigured: Boolean(c.env.EMAIL_FROM && (c.env.EMAIL || c.env.RESEND_API_KEY)) };
+  return { settings: rest, signupUrl: signup_token ? `${origin}/join/${signup_token}` : null, emailConfigured: Boolean(c.env.EMAIL_FROM && c.env.RESEND_API_KEY) };
 }
 
 adminRoutes.get("/admin/settings", async (c) => c.json(await readSettings(c)));
@@ -247,9 +247,8 @@ adminRoutes.post("/admin/email-test", async (c) => {
   const me = c.get("user")!;
   const { to, subject, html, text } = await previewReminder(c.env, me);
   const result = await sendEmail(c.env, { to, subject: `[Test] ${subject}`, html, text });
-  if (!result.ok) throw new HttpError(422, `Couldn't send (${result.provider}): ${result.error}`);
-  // Local dev: Cloudflare's send_email binding is simulated and delivers nothing.
-  return c.json({ ok: true, provider: result.provider, to, simulated: c.env.APP_ENV === "development" && result.provider === "cloudflare" });
+  if (!result.ok) throw new HttpError(422, `Resend couldn't send it: ${result.error}`);
+  return c.json({ ok: true, to, id: result.id });
 });
 
 /** Email everyone who hasn't responded to this open match day (once per player; failed sends are retried). */

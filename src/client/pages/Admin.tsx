@@ -786,9 +786,8 @@ function ScheduleTab() {
   });
   const [previewOpen, setPreviewOpen] = useState(false);
   const testSend = useMutation({
-    mutationFn: () => api.post<{ to: string; provider: string; simulated: boolean }>("/admin/email-test", {}),
-    onSuccess: (r) =>
-      toast(r.simulated ? "Local dev: Cloudflare email is simulated, nothing was delivered. Add RESEND_API_KEY to .dev.vars to really send." : `Test email sent to ${r.to} via ${r.provider === "resend" ? "Resend" : "Cloudflare"}`),
+    mutationFn: () => api.post<{ to: string }>("/admin/email-test", {}),
+    onSuccess: (r) => toast(`Test email sent to ${r.to}`),
     onError: (e: Error) => toast(e.message, "error"),
   });
   const run = useMutation({
@@ -850,7 +849,7 @@ function ScheduleTab() {
           <span>
             Email check-in reminders
             <span className="block text-muted">On match day, 2 hours before kick-off, players who haven't checked in or said they're unavailable get an email. Players can turn it off on their profile.</span>
-            {data && !data.emailConfigured && <span className="block text-ember">Email isn't configured on the server yet (EMAIL_FROM plus the EMAIL binding or RESEND_API_KEY).</span>}
+            {data && !data.emailConfigured && <span className="block text-ember">Email isn't configured on the server yet (EMAIL_FROM and the RESEND_API_KEY secret).</span>}
           </span>
         </label>
         <div className="-mt-3 flex flex-wrap gap-2 pl-7">

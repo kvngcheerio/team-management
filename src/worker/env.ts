@@ -11,11 +11,9 @@ export interface Bindings {
   APP_ORIGINS?: string;
   /** One-time token that authorises creating the first admin. Remove it after setup. */
   SETUP_TOKEN?: string;
-  /** Cloudflare Email Service binding (wrangler.jsonc `send_email`). */
-  EMAIL?: SendEmail;
-  /** Sender for outgoing email, e.g. "Matchday <noreply@pluvialhq.com>". Its domain must be onboarded. */
+  /** Sender for outgoing email, e.g. "Matchday <noreply@pluvialhq.com>". Its domain must be verified in Resend. */
   EMAIL_FROM?: string;
-  /** Optional fallback provider. `wrangler secret put RESEND_API_KEY`. */
+  /** Resend API key: all email is sent through Resend. `wrangler secret put RESEND_API_KEY`. */
   RESEND_API_KEY?: string;
 }
 

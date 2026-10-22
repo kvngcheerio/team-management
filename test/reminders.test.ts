@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sendEmail } from "../src/worker/lib/email";
 import { sendCheckinReminders } from "../src/worker/lib/reminders";
 import { Client, createMatchDay, createPlayer, createSeason, setupAdmin } from "./helpers";
@@ -12,17 +12,31 @@ const players: { playerId: string; client: Client }[] = [];
 const OPEN_UNTIL_KICKOFF = { checkinDeadlineTime: "07:30" };
 const TWO_HOURS_BEFORE = new Date("2026-11-07T04:45:00Z");
 
+// Resend's API is stubbed: each fakeMailer() gets its own outbox, routed by its API key.
+const realFetch = globalThis.fetch;
+const outboxes = new Map<string, { fail: boolean; sent: { to: string; subject: string; html: string; text: string; from: string; auth: string }[] }>();
+let keySeq = 0;
 function fakeMailer(fail = false) {
-  const sent: { to: string; subject: string; html: string; text: string; from: string }[] = [];
-  const EMAIL = {
-    async send(msg: any) {
-      if (fail) throw Object.assign(new Error("Sender domain not verified"), { code: "E_SENDER_NOT_VERIFIED" });
-      sent.push(msg);
-      return { messageId: String(sent.length) };
-    },
-  } as unknown as SendEmail;
-  return { sent, env: { DB: env.DB, EMAIL, EMAIL_FROM: "Matchday <noreply@example.com>", BETTER_AUTH_URL: "https://game.example.com" } };
+  const key = `re_test_${++keySeq}`;
+  const box = { fail, sent: [] as { to: string; subject: string; html: string; text: string; from: string; auth: string }[] };
+  outboxes.set(key, box);
+  return { sent: box.sent, env: { DB: env.DB, RESEND_API_KEY: key, EMAIL_FROM: "Matchday <noreply@example.com>", BETTER_AUTH_URL: "https://game.example.com" } };
 }
+beforeAll(() => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) !== "https://api.resend.com/emails") return realFetch(input as RequestInfo, init);
+    const auth = new Headers(init?.headers).get("Authorization") ?? "";
+    const box = outboxes.get(auth.replace("Bearer ", ""));
+    if (!box) return new Response(JSON.stringify({ message: "API key is invalid" }), { status: 401 });
+    if (box.fail) return new Response(JSON.stringify({ message: "The pluvialhq.com domain is not verified." }), { status: 403 });
+    const body = JSON.parse(String(init?.body));
+    box.sent.push({ ...body, to: body.to[0], auth });
+    return new Response(JSON.stringify({ id: `email_${box.sent.length}` }), { status: 200 });
+  }) as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
 
 beforeAll(async () => {
   ({ admin } = await setupAdmin());
@@ -77,7 +91,7 @@ describe("check-in reminder emails", () => {
     const broken = fakeMailer(true);
     expect(await sendCheckinReminders(broken.env, { now })).toMatchObject({ sent: 0, failed: 4 });
     const failed = await env.DB.prepare("SELECT status, provider, error FROM email_log WHERE match_day_id = ?").bind(day).all<{ status: string; provider: string; error: string }>();
-    expect(failed.results.every((r) => r.status === "failed" && r.error.includes("E_SENDER_NOT_VERIFIED"))).toBe(true);
+    expect(failed.results.every((r) => r.status === "failed" && r.error.includes("HTTP 403"))).toBe(true);
 
     const fixed = fakeMailer();
     expect(await sendCheckinReminders(fixed.env, { now })).toMatchObject({ sent: 4, failed: 0 });
@@ -116,28 +130,18 @@ describe("check-in reminder emails", () => {
     expect((await players[0]!.client.post(`/admin/matchdays/${day}/reminders`)).status).toBe(403);
     const res = await admin.post(`/admin/matchdays/${day}/reminders`);
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ days: 1, sent: 0, failed: 4 }); // the test worker has no EMAIL binding or Resend key
+    expect(res.body).toMatchObject({ days: 1, sent: 0, failed: 4 }); // the test worker has no RESEND_API_KEY
     expect((await admin.post("/admin/email-test")).status).toBe(422);
   });
 
-  it("sends through Resend, and falls back to it when Cloudflare rejects", async () => {
-    const calls: { url: string; auth: string | null; body: any }[] = [];
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(input), auth: new Headers(init?.headers).get("Authorization"), body: JSON.parse(String(init?.body)) });
-      return new Response(JSON.stringify({ id: "re_123" }), { status: 200 });
-    }) as typeof fetch;
-    try {
-      const msg = { to: "p@example.com", subject: "Hi", html: "<p>Hi</p>", text: "Hi" };
-      expect(await sendEmail({ EMAIL_FROM: "Matchday <noreply@example.com>", RESEND_API_KEY: "re_key" }, msg)).toEqual({ ok: true, provider: "resend" });
-      expect(calls[0]).toMatchObject({ url: "https://api.resend.com/emails", auth: "Bearer re_key", body: { from: "Matchday <noreply@example.com>", to: ["p@example.com"], subject: "Hi" } });
-
-      const broken = fakeMailer(true).env.EMAIL;
-      expect(await sendEmail({ EMAIL: broken, EMAIL_FROM: "x@example.com", RESEND_API_KEY: "re_key" }, msg)).toEqual({ ok: true, provider: "resend" });
-      expect(calls).toHaveLength(2);
-    } finally {
-      globalThis.fetch = realFetch;
-    }
+  it("calls Resend with the sender, recipient and API key, and reports its errors", async () => {
+    const msg = { to: "p@example.com", subject: "Hi", html: "<p>Hi</p>", text: "Hi" };
+    const ok = fakeMailer();
+    expect(await sendEmail(ok.env, msg)).toEqual({ ok: true, provider: "resend", id: "email_1" });
+    expect(ok.sent[0]).toMatchObject({ from: "Matchday <noreply@example.com>", to: "p@example.com", subject: "Hi", auth: `Bearer ${ok.env.RESEND_API_KEY}` });
+    const bad = await sendEmail(fakeMailer(true).env, msg);
+    expect(bad).toMatchObject({ ok: false, error: expect.stringContaining("not verified") });
+    expect(await sendEmail({ EMAIL_FROM: "x@example.com" }, msg)).toMatchObject({ ok: false, error: "RESEND_API_KEY is not configured" });
   });
 
   it("previews the reminder for admins only, worded as at send time", async () => {
