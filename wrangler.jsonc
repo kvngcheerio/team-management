@@ -37,6 +37,6 @@
 		// Extra origins allowed to sign in, besides BETTER_AUTH_URL (the main/custom domain).
 		"APP_ORIGINS": "https://matchday.control-f8d.workers.dev",
 		// Sender for reminder emails, sent through Resend (RESEND_API_KEY secret); the domain must be verified in Resend.
-		"EMAIL_FROM": "Matchday <noreply@pluvialhq.com>"
+		"EMAIL_FROM": "Matchday <noreply@mail.pluvialhq.com>"
 	}
 }
