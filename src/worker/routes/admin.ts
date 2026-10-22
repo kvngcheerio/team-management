@@ -5,7 +5,7 @@ import type { AppEnv, Ctx } from "../env";
 import { randomToken, sha256Hex } from "../lib/crypto";
 import { all, atomic, auditStmt, first, guard, HttpError, nowIso, stmt } from "../lib/db";
 import { requireAdmin } from "../lib/guards";
-import { rateLimit } from "../lib/rate-limit";
+import { successLimit } from "../lib/rate-limit";
 import { sendEmail } from "../lib/email";
 import { previewReminder, sendCheckinReminders } from "../lib/reminders";
 import { runSchedule } from "../lib/schedule";
@@ -241,13 +241,18 @@ adminRoutes.get("/admin/email-preview", async (c) => {
   return c.json({ ...(await previewReminder(c.env, me)), emailFrom: c.env.EMAIL_FROM ?? null });
 });
 
-/** Send that preview to the signed-in admin only, to check delivery and how it looks in a real inbox. */
+/**
+ * Send that preview to the signed-in admin only, to check delivery and how it looks in a real inbox.
+ * Only delivered tests count toward the limit, so fixing a misconfiguration never locks you out.
+ */
 adminRoutes.post("/admin/email-test", async (c) => {
-  await rateLimit(c, "email-test", 5, 3600);
+  const limit = await successLimit(c, "email-test-sent", 5, 3600);
+  await limit.check();
   const me = c.get("user")!;
   const { to, subject, html, text } = await previewReminder(c.env, me);
   const result = await sendEmail(c.env, { to, subject: `[Test] ${subject}`, html, text });
   if (!result.ok) throw new HttpError(422, `Resend couldn't send it: ${result.error}`);
+  await limit.record();
   return c.json({ ok: true, to, id: result.id });
 });
 

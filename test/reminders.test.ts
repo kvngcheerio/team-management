@@ -131,7 +131,8 @@ describe("check-in reminder emails", () => {
     const res = await admin.post(`/admin/matchdays/${day}/reminders`);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ days: 1, sent: 0, failed: 4 }); // the test worker has no RESEND_API_KEY
-    expect((await admin.post("/admin/email-test")).status).toBe(422);
+    // Failed test sends don't count toward the 5-per-hour limit.
+    for (let i = 0; i < 7; i++) expect((await admin.post("/admin/email-test")).status).toBe(422);
   });
 
   it("calls Resend with the sender, recipient and API key, and reports its errors", async () => {

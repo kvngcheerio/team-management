@@ -8,6 +8,28 @@ export async function clientKey(c: Ctx): Promise<string> {
   return (await sha256Hex(`${c.env.BETTER_AUTH_SECRET}:${ip}`)).slice(0, 32);
 }
 
+/**
+ * For limits that should only count successes: `check()` throws 429 once `limit` uses are recorded in
+ * the current window, without counting the attempt; call `record()` after the action succeeds.
+ */
+export async function successLimit(c: Ctx, bucket: string, limit: number, windowSeconds: number) {
+  const key = `${bucket}:${await clientKey(c)}`;
+  const windowStart = Math.floor(Date.now() / 1000 / windowSeconds) * windowSeconds;
+  return {
+    async check() {
+      const row = await c.env.DB.prepare("SELECT count FROM rate_limits WHERE key = ? AND window_start = ?").bind(key, windowStart).first<{ count: number }>();
+      if ((row?.count ?? 0) >= limit) throw new HttpError(429, "Too many attempts. Please wait a few minutes and try again.");
+    },
+    async record() {
+      await c.env.DB.prepare(
+        `INSERT INTO rate_limits (key, window_start, count) VALUES (?, ?, 1) ON CONFLICT (key, window_start) DO UPDATE SET count = count + 1`,
+      )
+        .bind(key, windowStart)
+        .run();
+    },
+  };
+}
+
 /** Fixed-window counter in D1; works across isolates and regions. Throws 429 when exceeded. */
 export async function rateLimit(c: Ctx, bucket: string, limit: number, windowSeconds: number) {
   const key = `${bucket}:${await clientKey(c)}`;
