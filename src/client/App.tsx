@@ -13,6 +13,7 @@ import MePage from "./pages/Me";
 import PayPage from "./pages/Pay";
 import StatsPage from "./pages/Stats";
 import DashboardPage from "./pages/Dashboard";
+import ForgotPasswordPage from "./pages/ForgotPassword";
 import GuestRegisterPage from "./pages/GuestRegister";
 import InvitePage from "./pages/Invite";
 import LiveResultsPage from "./pages/LiveResults";
@@ -160,6 +161,7 @@ export const router = createBrowserRouter([
     element: <PublicShell />,
     children: [
       { path: "/signin", element: <SignInPage /> },
+      { path: "/forgot-password", element: <ForgotPasswordPage /> },
       { path: "/setup", element: <SetupPage /> },
       { path: "/invite/:token", element: <InvitePage /> },
       { path: "/g/:token", element: <GuestRegisterPage /> },

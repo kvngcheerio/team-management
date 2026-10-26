@@ -63,11 +63,19 @@ app.use("*", async (c, next) => {
 app.on(["POST"], "/auth/sign-up/*", () => {
   throw new HttpError(403, "Sign-up is by invite only. Ask an admin for an invite link.");
 });
+// Of the email-OTP plugin only password reset is exposed: request a code by email, then reset with it.
+app.on(["GET", "POST"], ["/auth/email-otp/*", "/auth/sign-in/email-otp", "/auth/forget-password/*"], async (c, next) => {
+  const action = c.req.path.slice(c.req.path.indexOf("/auth/") + "/auth/".length);
+  if (c.req.method === "POST" && action === "email-otp/request-password-reset") await rateLimit(c, "password-reset-request", 5, 900);
+  else if (c.req.method === "POST" && action === "email-otp/reset-password") await rateLimit(c, "password-reset", 10, 900);
+  else throw new HttpError(404, "Not found.");
+  await next();
+});
 app.on(["POST"], "/auth/sign-in/*", async (c, next) => {
   await rateLimit(c, "sign-in", 10, 600);
   await next();
 });
-app.on(["GET", "POST"], "/auth/*", (c) => createAuth(c.env, c.req.url).handler(c.req.raw));
+app.on(["GET", "POST"], "/auth/*", (c) => createAuth(c.env, c.req.url, (p) => c.executionCtx.waitUntil(p)).handler(c.req.raw));
 
 app.get("/health", (c) => c.json({ ok: true }));
 

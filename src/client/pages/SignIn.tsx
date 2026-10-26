@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
-import { Navigate, useNavigate, useSearchParams } from "react-router";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { api } from "../api";
 import { PublicCard } from "../components/PublicCard";
 import { Button, ErrorBox, Field, Input, Loading } from "../components/ui";
@@ -42,9 +42,15 @@ export default function SignInPage() {
         <Field label="Email">
           <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Password">
-          <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
-        </Field>
+        {params.get("reset") === "1" && <p className="text-sm text-muted">Password reset. Sign in with your new password.</p>}
+        <div>
+          <Field label="Password">
+            <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+          </Field>
+          <Link to="/forgot-password" className="mt-1.5 inline-block text-sm text-muted underline underline-offset-4 hover:text-ink">
+            Forgot password?
+          </Link>
+        </div>
         <ErrorBox error={error} />
         <Button type="submit" size="lg" className="w-full" loading={busy}>
           Sign in
