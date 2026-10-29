@@ -181,3 +181,24 @@ describe("finance includes guest fees and memberships", () => {
     expect(f.memberships.length).toBe(3);
   });
 });
+
+describe("admin members list", () => {
+  it("lists renewal due first (overdue, then due soon), then other members, then guests", async () => {
+    const today = todayInZone("Africa/Lagos");
+    const set = (id: string, until: string) => env.DB.prepare("UPDATE players SET kind = 'member', membership_paid_until = ? WHERE id = ?").bind(until, id).run();
+    const overdue = await createPlayer(admin, "Zed Overdue");
+    const dueSoon = await createPlayer(admin, "Yan Due Soon");
+    const current = await createPlayer(admin, "Abe Current");
+    const lateGuest = await createPlayer(admin, "Aaron Guest", { kind: "guest" });
+    await set(overdue.playerId, addDays(today, -3));
+    await set(dueSoon.playerId, addDays(today, 10));
+    await set(current.playerId, addMonthsClamped(today, 5));
+    const rows = (await admin.get("/admin/memberships")).body.players as { playerId: string; kind: string; status: string }[];
+    const rank = (r: { kind: string; status: string }) => (r.kind === "guest" ? 3 : r.status === "overdue" ? 0 : r.status === "due_soon" ? 1 : 2);
+    expect(rows.map(rank)).toEqual([...rows.map(rank)].sort((a, b) => a - b));
+    const pos = (id: string) => rows.findIndex((r) => r.playerId === id);
+    expect(pos(overdue.playerId)).toBeLessThan(pos(dueSoon.playerId));
+    expect(pos(dueSoon.playerId)).toBeLessThan(pos(current.playerId));
+    expect(pos(current.playerId)).toBeLessThan(pos(lateGuest.playerId));
+  });
+});

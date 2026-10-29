@@ -7,8 +7,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatMoney } from "../../shared/rules";
 import { useMe } from "../hooks";
 import { formatDateLong } from "../format";
-import { useDayMutation, useMatchDay } from "../hooks";
-import type { Match, MatchDayDetail, TeamSet } from "../types";
+import { QUEUED_MESSAGE, useMatchDay, useQueuedDayMutation } from "../hooks";
+import { sendOrQueue } from "../outbox";
+import { offlineApply } from "../offline-apply";
+import type { Goal, Match, MatchDayDetail, TeamSet } from "../types";
 
 type GoalDraft = {
   matchId: string;
@@ -27,24 +29,35 @@ export default function LiveResultsPage() {
   // For finalized days every change needs a reason: queue the action until one is given.
   const [needsReason, setNeedsReason] = useState<null | { label: string; run: (reason: string) => void }>(null);
 
-  const createMatch = useDayMutation(id!, (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean; final?: { homeScore: number; awayScore: number }; reason?: string }) =>
-    api.post(`/matchdays/${id}/matches`, { id: crypto.randomUUID(), ...v }),
-    "Result saved",
-  );
-  const updateMatch = useDayMutation(id!, (v: { matchId: string; reason?: string; homeScore?: number; awayScore?: number; status?: string }) => {
+  // All of these can be made offline: they queue on the phone and send when the network is back.
+  const setName = (setId: string) => data?.sets.find((s) => s.id === setId)?.name ?? "set";
+  const createMatch = useQueuedDayMutation(id!, (v: { homeSetId: string; awaySetId: string; isPlayoff: boolean; final?: { homeScore: number; awayScore: number }; reason?: string }) => {
+    const body = { id: crypto.randomUUID(), ...v };
+    return { method: "POST", path: `/matchdays/${id}/matches`, body, label: `Match: ${setName(v.homeSetId)} v ${setName(v.awaySetId)}`, apply: offlineApply.createMatch(body) };
+  }, "Result saved");
+  const updateMatch = useQueuedDayMutation(id!, (v: { matchId: string; reason?: string; homeScore?: number; awayScore?: number; status?: string }) => {
     const { matchId, ...rest } = v;
-    return api.patch(`/matches/${matchId}`, rest);
+    return { method: "PATCH", path: `/matches/${matchId}`, body: rest, label: v.status ? `Match ${v.status === "completed" ? "full time" : v.status}` : "Score change", apply: offlineApply.updateMatch(matchId, rest) };
   });
-  const attribute = useDayMutation(id!, (v: { goalId: string; kind: "normal" | "own_goal"; scorerPlayerId: string; assistPlayerId: string | null; reason?: string }) => {
+  const attribute = useQueuedDayMutation(id!, (v: { goalId: string; kind: "normal" | "own_goal"; scorerPlayerId: string; assistPlayerId: string | null; reason?: string }) => {
     const { goalId, ...rest } = v;
-    return api.post(`/goals/${goalId}/attribute`, rest);
+    return { method: "POST", path: `/goals/${goalId}/attribute`, body: rest, label: "Name scorer", apply: offlineApply.attributeGoal(goalId, rest) };
   }, "Scorer saved");
-  const start = useDayMutation(id!, () => api.post(`/matchdays/${id}/start`), "Play started — rosters are locked");
-  const addGoal = useDayMutation(id!, (v: { matchId: string; setId: string; kind: string; scorerPlayerId: string | null; assistPlayerId: string | null; reason?: string }) => {
-    const { matchId, ...rest } = v;
-    return api.post(`/matches/${matchId}/goals`, { id: crypto.randomUUID(), ...rest });
+  const start = useQueuedDayMutation(id!, () => ({ method: "POST", path: `/matchdays/${id}/start`, label: "Start play", apply: offlineApply.start() }), "Play started — rosters are locked");
+  const addGoal = useQueuedDayMutation(id!, (v: { matchId: string; setId: string; kind: Goal["kind"]; scorerPlayerId: string | null; assistPlayerId: string | null; reason?: string }) => {
+    const { matchId, reason, ...goal } = v;
+    const body = { id: crypto.randomUUID(), ...goal, reason };
+    return { method: "POST", path: `/matches/${matchId}/goals`, body, label: `Goal for ${setName(v.setId)}`, apply: offlineApply.addGoal(matchId, { id: body.id, ...goal }) };
   }, "Goal recorded");
-  const deleteGoal = useDayMutation(id!, (v: { goalId: string; reason?: string }) => api.post(`/goals/${v.goalId}/delete`, { reason: v.reason }), "Goal removed");
+  // Removing a goal that's already gone (404) means an earlier send got through.
+  const deleteGoal = useQueuedDayMutation(id!, (v: { goalId: string; reason?: string }) => ({
+    method: "POST",
+    path: `/goals/${v.goalId}/delete`,
+    body: { reason: v.reason },
+    label: "Remove goal",
+    doneStatuses: [404],
+    apply: offlineApply.deleteGoal(v.goalId),
+  }), "Goal removed");
 
   if (isLoading) return <Loading />;
   if (error) return <ErrorBox error={error} />;
@@ -438,12 +451,25 @@ function CardsSection({ detail, liveMatchId }: { detail: MatchDayDetail; liveMat
     qc.invalidateQueries({ queryKey: ["matchday", detail.day.id] });
     qc.invalidateQueries({ queryKey: ["admin-fines"] });
   };
+  // Can be given offline: the card queues on the phone (the fine shows once it's sent).
   const give = useMutation({
-    mutationFn: (playerId: string) => api.post(`/matchdays/${detail.day.id}/cards`, { id: crypto.randomUUID(), playerId, color, matchId: liveMatchId, reason: reason || undefined }),
-    onSuccess: (r: { card: { fineAmount: number; displayName?: string } }) => {
-      refresh();
+    mutationFn: async (playerId: string) => {
+      const card = { id: crypto.randomUUID(), playerId, color, matchId: liveMatchId, reason: reason || null };
+      const res = await sendOrQueue<{ card: { fineAmount: number } }>({
+        method: "POST",
+        path: `/matchdays/${detail.day.id}/cards`,
+        body: { ...card, reason: card.reason ?? undefined },
+        dayId: detail.day.id,
+        label: `${color === "yellow" ? "Yellow" : "Red"} card`,
+      });
+      if (res.queued) qc.setQueryData<MatchDayDetail>(["matchday", detail.day.id], (d) => d && offlineApply.giveCard(card)(d));
+      return res.queued ? null : res.data;
+    },
+    onSuccess: (r) => {
       setOpen(false);
       setReason("");
+      if (!r) return toast(QUEUED_MESSAGE);
+      refresh();
       toast(`${color === "yellow" ? "Yellow" : "Red"} card given · fine ${formatMoney(r.card.fineAmount, me?.currency ?? "NGN")}`);
     },
     onError: (e: Error) => toast(e.message, "error"),

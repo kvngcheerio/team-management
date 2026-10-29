@@ -7,6 +7,8 @@ import { formatDate } from "../format";
 import { useMe } from "../hooks";
 import type { Card as FineCard } from "../types";
 import { AccountSections, useAccount, useCheckout } from "../components/account";
+import { clearQueryCache } from "../offline-cache";
+import { clearOutbox } from "../outbox";
 import { formatMoney } from "../../shared/rules";
 
 /** Center-crop and resize to a 256px JPEG in the browser, so uploads stay small (~20–40 KB). */
@@ -64,6 +66,8 @@ export default function MePage() {
   const signOut = async () => {
     await api.post("/auth/sign-out", {}).catch(() => {});
     qc.clear();
+    clearOutbox();
+    clearQueryCache();
     navigate("/signin");
   };
 
@@ -128,6 +132,7 @@ export default function MePage() {
         {me?.user?.role === "admin" && <Link to="/admin"><Button variant="secondary">Admin area</Button></Link>}
         <Link to="/announcements"><Button variant="secondary">Announcements</Button></Link>
         <Link to="/rules"><Button variant="secondary">Rules</Button></Link>
+        <Link to="/install"><Button variant="secondary">Install the app</Button></Link>
         <Button variant="danger" onClick={signOut}>Sign out</Button>
       </div>
     </div>

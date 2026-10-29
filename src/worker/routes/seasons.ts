@@ -52,7 +52,7 @@ seasonRoutes.get("/seasons", requireUser, async (c) => {
 seasonRoutes.get("/seasons/:id/standings", requireUser, async (c) => {
   const season = await first<SeasonRow>(c.env.DB, `${SEASON_LIST_SQL} WHERE s.id = ?`, c.req.param("id"));
   if (!season) throw new HttpError(404, "Season not found.");
-  return c.json({ season: toSeason(season), ...(await seasonTables(c.env.DB, season.id)) });
+  return c.json({ season: toSeason(season), ...(await seasonTables(c.env.DB, season.id, { includeGuests: c.get("user")?.role === "admin" })) });
 });
 
 async function assertNoOverlap(db: D1Database, startDate: string, endDate: string, exceptId?: string) {
@@ -159,7 +159,7 @@ seasonRoutes.post("/seasons/:id/close", requireAdmin, async (c) => {
   if ((open?.n ?? 0) > 0) {
     throw new HttpError(409, `Finalize or cancel the season's ${open!.n} open match day(s) before closing it.`);
   }
-  const { table } = await seasonTables(db, season.id);
+  const { table } = await seasonTables(db, season.id, { includeGuests: true });
   const now = nowIso();
   await atomic(
     db,
@@ -234,7 +234,8 @@ seasonRoutes.get("/seasons/:id/stats", requireUser, async (c) => {
   const admin = c.get("user")?.role === "admin";
   const awards = await mvpAwards(c, season.id);
   const seasonMvp = awards.season.get(season.id) ?? [];
-  const players = rows.map((r) => {
+  // Guests aren't part of the teams: only admins see them here (they stay on each guest's own profile).
+  const players = rows.filter((r) => admin || r.kind !== "guest").map((r) => {
     const appearances = r.appearances ?? 0;
     return {
       playerId: r.playerId,
@@ -257,9 +258,10 @@ seasonRoutes.get("/seasons/:id/stats", requireUser, async (c) => {
   });
   const totals = {
     matchDays: season.finalized_days ?? 0,
-    goals: players.reduce((s, p) => s + p.goals, 0),
-    yellow: players.reduce((s, p) => s + p.yellow, 0),
-    red: players.reduce((s, p) => s + p.red, 0),
+    // Season totals still count every goal and card, guests included.
+    goals: rows.reduce((s, r) => s + (r.goals ?? 0), 0),
+    yellow: rows.reduce((s, r) => s + (r.yellow ?? 0), 0),
+    red: rows.reduce((s, r) => s + (r.red ?? 0), 0),
     ...(admin ? { owed: rows.reduce((s, r) => s + (r.owed ?? 0), 0), paid: rows.reduce((s, r) => s + (r.paid ?? 0), 0) } : {}),
   };
   return c.json({ season: toSeason(season), players, totals });

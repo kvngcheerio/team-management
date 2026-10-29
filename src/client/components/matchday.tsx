@@ -1,7 +1,8 @@
 import { Link } from "react-router";
 import { api } from "../api";
 import { formatInstant, REG_LABEL, relativeDeadline } from "../format";
-import { useDayMutation } from "../hooks";
+import { useQueuedDayMutation } from "../hooks";
+import { useOutbox } from "../outbox";
 import type { Match, MatchDayDetail, TeamSet } from "../types";
 import type { StandingRow } from "../../shared/rules";
 import { useQuery } from "@tanstack/react-query";
@@ -12,12 +13,14 @@ import { Avatar, Badge, Button, Card, CardIcon, cx, GuestBadge, SetChip } from "
 
 export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
   const { day, me, counts } = detail;
-  const checkIn = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/checkin`), (d) =>
+  // Check-in and "can't make it" queue when offline; the server decides the outcome (and lateness) when they arrive.
+  const checkIn = useQueuedDayMutation(day.id, () => ({ method: "POST", path: `/matchdays/${day.id}/checkin`, label: "Check in" }), (d) =>
     d.me?.registrationStatus === "waitlist" ? "Day is full — you're on the waiting list" : d.me?.registrationStatus === "pending" ? "Almost there — pay the guest fee to confirm your place" : "You're in! See you on the pitch",
   );
   const payFee = useCheckout(`/matchdays/${day.id}/guest-fee/checkout`, "Guest fee paid");
-  const unavailable = useDayMutation(day.id, () => api.post(`/matchdays/${day.id}/unavailable`), "Got it — marked as not available");
+  const unavailable = useQueuedDayMutation(day.id, () => ({ method: "POST", path: `/matchdays/${day.id}/unavailable`, label: "Can't make it" }), "Got it — marked as not available");
   const status = me?.registrationStatus;
+  const queued = useOutbox().items.find((i) => i.dayId === day.id && /\/(checkin|unavailable)$/.test(i.path));
   const active = status === "confirmed" || status === "waitlist" || status === "pending";
   const spots = Math.max(0, day.capacity - counts.confirmed);
   return (
@@ -33,6 +36,10 @@ export function CheckInPanel({ detail }: { detail: MatchDayDetail }) {
         <p className="text-sm text-muted">Your login isn't linked to a player profile yet — ask an admin.</p>
       ) : !me.approved ? (
         <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">Your account is waiting for admin approval. You can mark availability once approved.</p>
+      ) : queued ? (
+        <p className="rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-900">
+          “{queued.label}” is saved on this phone and will be sent when you're back online. Your place is decided when it arrives.
+        </p>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
           {status && (

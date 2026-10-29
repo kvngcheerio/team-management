@@ -34,9 +34,13 @@ export interface SeasonTables {
   frozen: boolean;
 }
 
-export async function seasonTables(db: D1Database, seasonId: string): Promise<SeasonTables> {
+/**
+ * Season league table and goal/assist leaderboards. Guests aren't part of the teams, so members don't see
+ * them on shared boards (`includeGuests: false`); their numbers stay on their own profile.
+ */
+export async function seasonTables(db: D1Database, seasonId: string, opts: { includeGuests: boolean }): Promise<SeasonTables> {
   const season = await first<{ status: string }>(db, "SELECT status FROM seasons WHERE id = ?", seasonId);
-  const aggs = await seasonAggregates(db, seasonId);
+  const aggs = (await seasonAggregates(db, seasonId)).filter((a) => opts.includeGuests || a.kind !== "guest");
   const goals = rankBy(aggs, (r) => r.goals);
   const assists = rankBy(aggs, (r) => r.assists);
   if (season?.status === "closed") {
@@ -47,7 +51,8 @@ export async function seasonTables(db: D1Database, seasonId: string): Promise<Se
          FROM season_final_standings f JOIN players p ON p.id = f.player_id WHERE f.season_id = ? ORDER BY f.position, f.display_name`,
       seasonId,
     );
-    return { table: frozen.map((r) => ({ ...r, shared: Boolean(r.shared) })), goals, assists, frozen: true };
+    const shown = frozen.filter((r) => opts.includeGuests || r.kind !== "guest");
+    return { table: shown.map((r) => ({ ...r, shared: Boolean(r.shared) })), goals, assists, frozen: true };
   }
   // League table: members (guests earn no league points) plus anyone who earned points before converting.
   const leagueRows = aggs.filter((a) => a.kind === "member" || a.points > 0);

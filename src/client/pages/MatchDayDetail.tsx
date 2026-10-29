@@ -6,7 +6,8 @@ import { CheckInPanel, DayCards, DayHeaderMeta, MatchesList, SetTable, TeamSheet
 import { MvpVote } from "../components/MvpVote";
 import { Badge, Button, Card, ConfirmDialog, cx, Empty, ErrorBox, Field, GuestBadge, Input, Loading, SectionTitle, Segmented, Select, StatusBadge, useToast } from "../components/ui";
 import { formatDateLong, REG_LABEL } from "../format";
-import { useDayMutation, useIsAdmin, useMatchDay } from "../hooks";
+import { useDayMutation, useIsAdmin, useMatchDay, useQueuedDayMutation } from "../hooks";
+import { offlineApply } from "../offline-apply";
 import type { MatchDayDetail, Player, Registration } from "../types";
 
 type Tab = "players" | "teams" | "results";
@@ -343,9 +344,13 @@ function RegistrationRow({ reg, detail, isAdmin, attendanceMode }: { reg: Regist
   const finalized = detail.day.status === "finalized";
   const [pendingAttendance, setPendingAttendance] = useState<boolean | null | undefined>(undefined);
   const act = useDayMutation(dayId, (action: string) => api.post(`/registrations/${reg.id}/${action}`, {}), "Updated");
-  const attend = useDayMutation(dayId, (v: { attended: boolean | null; reason?: string }) =>
-    api.post(`/matchdays/${dayId}/attendance`, { entries: [{ playerId: reg.playerId, attended: v.attended }], reason: v.reason }),
-  );
+  const attend = useQueuedDayMutation(dayId, (v: { attended: boolean | null; reason?: string }) => ({
+    method: "POST",
+    path: `/matchdays/${dayId}/attendance`,
+    body: { entries: [{ playerId: reg.playerId, attended: v.attended }], reason: v.reason },
+    label: `Attendance: ${reg.displayName}`,
+    apply: offlineApply.attendance(reg.playerId, v.attended),
+  }));
   const editable = ["draft", "checkin_open", "locked"].includes(detail.day.status);
   const [waiveOpen, setWaiveOpen] = useState(false);
   const fee = useDayMutation(dayId, async (v: { action: "mark-paid" | "waive"; reason?: string }) => {

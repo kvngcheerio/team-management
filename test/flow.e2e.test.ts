@@ -217,9 +217,10 @@ describe("match day end-to-end", () => {
     expect(row(a1)).toMatchObject({ points: 3, dailyWins: 1, appearances: 1, position: 1 });
     expect(row(absentId)).toMatchObject({ points: 0, appearances: 0 });
     expect(row(b1)).toMatchObject({ points: 0, appearances: 1 });
-    // Guests are not in the league table but do appear in the scorers list.
+    // Guests aren't on members' boards (league table or scorers); admins still see them in the scorers.
     expect(row(guestPlayerId)).toBeUndefined();
-    expect(res.body.goals.find((r: any) => r.playerId === guestPlayerId)).toMatchObject({ goals: 1 });
+    expect(res.body.goals.find((r: any) => r.playerId === guestPlayerId)).toBeUndefined();
+    expect((await admin.get(`/seasons/${seasonId}/standings`)).body.goals.find((r: any) => r.playerId === guestPlayerId)).toMatchObject({ goals: 1 });
     // Own goals do not count as scored goals.
     expect(res.body.goals.find((r: any) => r.playerId === b1)).toBeUndefined();
     expect(res.body.assists.find((r: any) => r.playerId === a2)).toMatchObject({ assists: 1 });

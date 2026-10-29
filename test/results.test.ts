@@ -50,8 +50,10 @@ describe("recording results", () => {
     // Own goal by a B player credited to A also works.
     const another = updated.goals.find((g: any) => g.setId === A.id && g.kind === "unattributed");
     expect((await admin.post(`/goals/${another.id}/attribute`, { kind: "own_goal", scorerPlayerId: b1 })).status).toBe(200);
-    // Can't attribute the same goal twice.
+    // Can't attribute the same goal twice, but sending the same attribution again (an offline replay) succeeds.
     expect((await admin.post(`/goals/${goal.id}/attribute`, { kind: "normal", scorerPlayerId: a2 })).status).toBe(409);
+    expect((await admin.post(`/goals/${goal.id}/attribute`, { kind: "normal", scorerPlayerId: a1 })).status).toBe(409);
+    expect((await admin.post(`/goals/${goal.id}/attribute`, { kind: "normal", scorerPlayerId: a1, assistPlayerId: a2 })).status).toBe(200);
   });
 
   it("finalizes with the recorded results and counts named goals", async () => {

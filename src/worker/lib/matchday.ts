@@ -137,14 +137,20 @@ export async function loadDayFull(db: D1Database, id: string): Promise<LoadedDay
   };
 }
 
-/** Each published set's size and total skill rating, for late placement. */
+/** Each published set's size, total skill rating and guest count, for late placement. */
 export async function setFills(db: D1Database, loaded: LoadedDay): Promise<SetFill[]> {
-  const ratings = new Map(
-    (await all<{ id: string; skill_rating: number }>(db, "SELECT p.id, p.skill_rating FROM roster_entries r JOIN players p ON p.id = r.player_id WHERE r.match_day_id = ?", loaded.day.id)).map((r) => [r.id, r.skill_rating]),
+  const players = new Map(
+    (await all<{ id: string; skill_rating: number; kind: string }>(db, "SELECT p.id, p.skill_rating, p.kind FROM roster_entries r JOIN players p ON p.id = r.player_id WHERE r.match_day_id = ?", loaded.day.id)).map((r) => [r.id, r]),
   );
   return loaded.sets.map((s) => {
     const members = loaded.roster.filter((r) => r.set_id === s.id);
-    return { setId: s.id, idx: s.idx, size: members.length, totalRating: members.reduce((n, r) => n + (ratings.get(r.player_id) ?? 5), 0) };
+    return {
+      setId: s.id,
+      idx: s.idx,
+      size: members.length,
+      totalRating: members.reduce((n, r) => n + (players.get(r.player_id)?.skill_rating ?? 5), 0),
+      guests: members.filter((r) => players.get(r.player_id)?.kind === "guest").length,
+    };
   });
 }
 
@@ -163,7 +169,8 @@ export async function autoPlaceInTeam(c: Ctx, dayId: string, playerId: string): 
       if (!["checkin_open", "locked"].includes(day.status) || loaded.sets.length === 0) return null;
       if (loaded.registrations.find((r) => r.player_id === playerId)?.status !== "confirmed") return null;
       if (loaded.roster.some((r) => r.player_id === playerId)) return null;
-      const choice = chooseSetForLatePlayer(await setFills(db, loaded), day.team_size);
+      const kind = await first<{ kind: string }>(db, "SELECT kind FROM players WHERE id = ?", playerId);
+      const choice = chooseSetForLatePlayer(await setFills(db, loaded), day.team_size, kind?.kind === "guest");
       if (!choice) return null;
       const setName = loaded.sets.find((s) => s.id === choice.set.setId)!.name;
       await commitDay(

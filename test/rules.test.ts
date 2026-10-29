@@ -328,6 +328,29 @@ describe("team selection", () => {
     expect(a.sets.map((s) => s.players.length).sort()).toEqual([5, 5, 6, 6]);
   });
 
+  it("spreads guests evenly across sets in both modes", () => {
+    // 6 members and 9 high-rated guests over 3 sets: without the guest rule, guests could stack in one set.
+    const mixed: PoolPlayer[] = Array.from({ length: 15 }, (_, i) => ({
+      playerId: `m${i}`,
+      displayName: `M${i}`,
+      rating: i < 6 ? 3 : 8,
+      gk: i === 0 ? "prefers" : i === 6 ? "prefers" : "none",
+      guest: i >= 6,
+    }));
+    const byId = new Map(mixed.map((p) => [p.playerId, p]));
+    for (let seed = 1; seed <= 25; seed++) {
+      for (const fn of [balancedTeams, randomTeams]) {
+        const res = fn(mixed, 3, 5, seededRandom(seed));
+        const guests = res.sets.map((s) => s.players.filter((p) => byId.get(p.playerId)!.guest).length);
+        const members = res.sets.map((s) => s.players.length - guests[res.sets.indexOf(s)]!);
+        const sizes = res.sets.map((s) => s.players.length);
+        expect(Math.max(...guests) - Math.min(...guests)).toBeLessThanOrEqual(1);
+        expect(Math.max(...members) - Math.min(...members)).toBeLessThanOrEqual(1);
+        expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
   it("handles insufficient players explicitly", () => {
     expect(() => balancedTeams(pool.slice(0, 7), 4, 5, seededRandom(1))).toThrow(TeamSelectionError);
     const short = balancedTeams(pool.slice(0, 10), 4, 5, seededRandom(1));
@@ -371,6 +394,17 @@ describe("late guests", () => {
     expect(chooseSetForLateGuest(fills, 5)!.setId).toBe("D");
     expect(chooseSetForLateGuest(fills.filter((f) => f.setId !== "D"), 5)!.setId).toBe("C");
     expect(chooseSetForLateGuest([{ setId: "X", idx: 2, size: 4, totalRating: 20 }, { setId: "Y", idx: 1, size: 4, totalRating: 20 }], 5)!.setId).toBe("Y");
+  });
+  it("breaks size ties by guest count: guests to the fewest guests, members to the most", () => {
+    const tied = [
+      { setId: "A", idx: 1, size: 4, totalRating: 20, guests: 3 },
+      { setId: "B", idx: 2, size: 4, totalRating: 28, guests: 0 },
+      { setId: "C", idx: 3, size: 5, totalRating: 25, guests: 0 },
+    ];
+    expect(chooseSetForLateGuest(tied, 5)!.setId).toBe("B");
+    expect(chooseSetForLateGuest(tied, 5, false)!.setId).toBe("A");
+    // Size still comes first: a smaller set takes the guest even if it already has more guests.
+    expect(chooseSetForLateGuest([{ ...tied[0]!, size: 3 }, tied[1]!], 5)!.setId).toBe("A");
   });
   it("returns null when every set has 5", () => {
     expect(chooseSetForLateGuest(fills.map((f) => ({ ...f, size: 5 })), 5)).toBeNull();

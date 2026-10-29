@@ -7,6 +7,7 @@ import { formatDate, formatDateLong } from "../format";
 import { useMe } from "../hooks";
 import type { Announcement, LeaderRow, MatchDayDetail, Poll } from "../types";
 import { MvpVote } from "../components/MvpVote";
+import { InstallCard } from "../components/offline";
 import { AnnouncementCard } from "./Announcements";
 import type { StandingRow } from "../../shared/rules";
 
@@ -36,6 +37,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
+      <InstallCard />
       <div className="flex items-center gap-4">
         <Avatar name={me?.player?.displayName ?? me?.user?.name ?? "?"} url={me?.player?.avatarUrl} size={64} />
         <div>

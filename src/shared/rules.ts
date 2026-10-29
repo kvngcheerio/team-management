@@ -37,11 +37,12 @@ export const RULES_SUMMARY = [
   "League points go by where your set finishes that day (most match wins first), once per match day. With 4 sets: 1st 3, 2nd 2, 3rd 1, 4th 0. With 3 sets: 1st 3, 2nd 1, 3rd 0. With 2 sets: winner 3.",
   "Below first, sets level on wins are split by goal difference; if that's level too they share the position and its points. A tie on wins for first is shared — unless the admin chose a playoff for that day, in which case a recorded playoff match decides it (the playoff loser finishes 2nd).",
   "If no set wins a single match (all draws), there is no daily winner and nobody earns points.",
-  "Eligible = in the set's locked roster, attendance confirmed, and a member when play started. Guests can score and assist but earn no league points.",
+  "Eligible = in the set's locked roster, attendance confirmed, and a member when play started. Guests can score and assist but earn no league points, and they don't appear on the shared leaderboards (their stats stay on their own profile).",
   "Converting a guest to a member applies from the next roster lock onwards (prospective).",
   "League table order: points, then daily wins, then goals, then assists. Players level on all four share the position.",
   "Seasons run six calendar months between explicit start and end dates (timezone Africa/Lagos by default).",
   "Only finalized match days count. Cancelled match days award nothing.",
+  "When teams are picked, guests are split evenly across the sets, and so are members. Players added after teams are published go to the smallest set, with guests going to the set with the fewest guests.",
   "Rosters lock when the first match starts: no team switches after that. Late guests can still be added on the pitch into a team with a free spot (teams are 5-a-side by default).",
   "Admins can correct finalized days; every correction is audited and standings are recalculated from records, so points can never be awarded twice.",
   "The team sheet is visible to players from 07:50 WAT on match day (or once play starts).",
@@ -513,6 +514,8 @@ export interface PoolPlayer {
   /** 1..10, private admin rating. */
   rating: number;
   gk: "none" | "can" | "prefers";
+  /** Guests are spread evenly across the sets so no set is mostly guests. */
+  guest?: boolean;
 }
 
 export interface TeamAssignment {
@@ -595,15 +598,19 @@ function finish(buckets: PoolPlayer[][], gkIds: Set<string>, teamSize: number, b
   });
 }
 
-/** Random split: shuffle and deal round-robin, so set sizes differ by at most one. */
+/**
+ * Random split: shuffle and deal round-robin, guests first and then members, so set sizes, guest counts
+ * and member counts each differ by at most one.
+ */
 export function randomTeams(pool: PoolPlayer[], setCount: number, teamSize: number, rand: () => number): TeamSelectionResult {
   const warnings = checkPool(pool, setCount, teamSize);
   const buckets: PoolPlayer[][] = Array.from({ length: setCount }, () => []);
-  shuffle(pool, rand).forEach((p, i) => buckets[i % setCount]!.push(p));
+  const shuffled = shuffle(pool, rand);
+  [...shuffled.filter((p) => p.guest), ...shuffled.filter((p) => !p.guest)].forEach((p, i) => buckets[i % setCount]!.push(p));
   return {
     sets: finish(buckets, new Set(), teamSize, false),
     warnings,
-    explanation: "Players were shuffled randomly and dealt to the sets in turn. Ratings were not used.",
+    explanation: "Players were shuffled randomly and dealt to the sets in turn, guests spread evenly first. Ratings were not used.",
   };
 }
 
@@ -611,8 +618,9 @@ export function randomTeams(pool: PoolPlayer[], setCount: number, teamSize: numb
  * Balanced split (greedy, explainable — not mathematically optimal):
  * 1. Goalkeepers: players who prefer goal (then those who can play there) are spread one per set,
  *    strongest first.
- * 2. Everyone else is sorted by rating (ties shuffled) and dealt strongest-first, each to the set
- *    with the fewest players, breaking ties by the lowest total rating.
+ * 2. Guests are sorted by rating (ties shuffled) and dealt strongest-first, each to the set with the
+ *    fewest guests, then the fewest players, then the lowest total rating — so guests split evenly.
+ * 3. Members are dealt the same way, each to the set with the fewest players, then the lowest total.
  */
 export function balancedTeams(pool: PoolPlayer[], setCount: number, teamSize: number, rand: () => number): TeamSelectionResult {
   const warnings = checkPool(pool, setCount, teamSize);
@@ -628,24 +636,30 @@ export function balancedTeams(pool: PoolPlayer[], setCount: number, teamSize: nu
   }
   const buckets: PoolPlayer[][] = Array.from({ length: setCount }, () => []);
   const total = (b: PoolPlayer[]) => b.reduce((s, p) => s + p.rating, 0);
+  const guests = (b: PoolPlayer[]) => b.filter((p) => p.guest).length;
   const place = (p: PoolPlayer) => {
+    // [guest count (guests only), size, total rating], compared in order; lowest wins.
+    const key = (b: PoolPlayer[]) => [p.guest ? guests(b) : 0, b.length, total(b)];
     let best = 0;
     for (let i = 1; i < setCount; i++) {
-      const bi = buckets[i]!;
-      const bb = buckets[best]!;
-      if (bi.length < bb.length || (bi.length === bb.length && total(bi) < total(bb))) best = i;
+      const ki = key(buckets[i]!);
+      const kb = key(buckets[best]!);
+      const d = ki.findIndex((v, j) => v !== kb[j]);
+      if (d >= 0 && ki[d]! < kb[d]!) best = i;
     }
     buckets[best]!.push(p);
   };
   keepers.forEach(place);
-  shuffled.filter((p) => !gkIds.has(p.playerId)).sort(byRating).forEach(place);
+  const outfield = shuffled.filter((p) => !gkIds.has(p.playerId)).sort(byRating);
+  outfield.filter((p) => p.guest).forEach(place);
+  outfield.filter((p) => !p.guest).forEach(place);
   const sets = finish(buckets, gkIds, teamSize, true);
   const totals = sets.map((s) => s.totalRating);
   return {
     sets,
     warnings,
     explanation:
-      `Goalkeepers were spread first, then players were dealt from strongest to weakest rating, each to the set with the fewest players and lowest total rating. ` +
+      `Goalkeepers were spread first, then guests were split evenly across the sets, then members were dealt from strongest to weakest rating, each to the set with the fewest players and lowest total rating. ` +
       `Total ratings range ${Math.min(...totals)}–${Math.max(...totals)}. Ratings are a rough guide, so balance is approximate.`,
   };
 }
@@ -753,26 +767,39 @@ export interface SetFill {
   idx: number;
   size: number;
   totalRating: number;
+  /** Guests already in the set. */
+  guests?: number;
+}
+
+/**
+ * Order for placing a late player: fewest players first; then a guest goes to the set with the fewest
+ * guests and a member to the set with the most (so neither ends up stacked); then the lower total
+ * rating, then the lower set number.
+ */
+function lateOrder(guest: boolean) {
+  return (a: SetFill, b: SetFill) =>
+    a.size - b.size || ((a.guests ?? 0) - (b.guests ?? 0)) * (guest ? 1 : -1) || a.totalRating - b.totalRating || a.idx - b.idx;
 }
 
 /**
  * Pick the set a late guest joins: the one with the fewest players that still has room under the
- * team size; ties go to the lower total rating, then the lower set number. Null when every set is full.
+ * team size; ties go to the fewest guests, then the lower total rating, then the lower set number.
+ * Null when every set is full.
  */
-export function chooseSetForLateGuest(sets: SetFill[], teamSize: number): SetFill | null {
+export function chooseSetForLateGuest(sets: SetFill[], teamSize: number, guest = true): SetFill | null {
   const open = sets.filter((s) => s.size < teamSize);
   if (open.length === 0) return null;
-  return [...open].sort((a, b) => a.size - b.size || a.totalRating - b.totalRating || a.idx - b.idx)[0]!;
+  return [...open].sort(lateOrder(guest))[0]!;
 }
 
 /**
- * Where a player confirmed after teams are published goes: the same set a late guest would join, as a
- * starter; when every set is full, the smallest set (same tie-breaks) as a sub. Null when there are no sets.
+ * Where a player confirmed after teams are published goes: the smallest set with room as a starter;
+ * when every set is full, the smallest set as a sub (tie-breaks as in `lateOrder`). Null when there are no sets.
  */
-export function chooseSetForLatePlayer(sets: SetFill[], teamSize: number): { set: SetFill; role: "starter" | "sub" } | null {
-  const open = chooseSetForLateGuest(sets, teamSize);
+export function chooseSetForLatePlayer(sets: SetFill[], teamSize: number, guest = false): { set: SetFill; role: "starter" | "sub" } | null {
+  const open = chooseSetForLateGuest(sets, teamSize, guest);
   if (open) return { set: open, role: "starter" };
-  const set = [...sets].sort((a, b) => a.size - b.size || a.totalRating - b.totalRating || a.idx - b.idx)[0];
+  const set = [...sets].sort(lateOrder(guest))[0];
   return set ? { set, role: "sub" } : null;
 }
 

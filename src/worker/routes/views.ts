@@ -84,7 +84,7 @@ viewRoutes.get("/dashboard", requireUser, async (c) => {
         (SELECT COUNT(*) FROM matches m WHERE m.match_day_id = md.id AND m.status = 'completed') AS matches
        FROM match_days md WHERE md.status = 'finalized' ORDER BY md.date DESC LIMIT 4`,
   );
-  const tables = season ? await seasonTables(db, season.id) : null;
+  const tables = season ? await seasonTables(db, season.id, { includeGuests: isAdmin(c) }) : null;
   const pendingGuests = isAdmin(c)
     ? ((await first<{ n: number }>(
         db,

@@ -555,17 +555,17 @@ paymentRoutes.get("/admin/memberships", requireAdmin, async (c) => {
             (SELECT r.display_name FROM players r WHERE r.id = p.referred_by) AS referrer
        FROM players p WHERE p.active = 1 ORDER BY p.kind DESC, p.display_name COLLATE NOCASE`,
   );
-  return c.json({
-    settings: await accessSettings(db),
-    players: rows.map((r) => ({
-      playerId: r.id,
-      displayName: r.display_name,
-      kind: r.kind,
-      paidUntil: r.membership_paid_until,
-      status: renewalStatus(r.kind, r.membership_paid_until, today),
-      wallet: r.wallet,
-      referredBy: r.referrer,
-      hasAccount: r.has_account === 1,
-    })),
-  });
+  // Renewal due first (overdue, then due soon), then other members, then guests; by name within each.
+  const rank = (p: { kind: string; status: string }) => (p.kind === "guest" ? 3 : p.status === "overdue" ? 0 : p.status === "due_soon" ? 1 : 2);
+  const players = rows.map((r) => ({
+    playerId: r.id,
+    displayName: r.display_name,
+    kind: r.kind,
+    paidUntil: r.membership_paid_until,
+    status: renewalStatus(r.kind, r.membership_paid_until, today),
+    wallet: r.wallet,
+    referredBy: r.referrer,
+    hasAccount: r.has_account === 1,
+  }));
+  return c.json({ settings: await accessSettings(db), players: players.sort((a, b) => rank(a) - rank(b)) });
 });

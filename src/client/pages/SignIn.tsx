@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { api } from "../api";
+import { resumeOutbox } from "../outbox";
 import { PublicCard } from "../components/PublicCard";
 import { Button, ErrorBox, Field, Input, Loading } from "../components/ui";
 import { useMe } from "../hooks";
@@ -28,6 +29,7 @@ export default function SignInPage() {
     try {
       await api.post("/auth/sign-in/email", { email, password });
       await qc.invalidateQueries();
+      resumeOutbox();
       navigate(next, { replace: true });
     } catch (err) {
       setError(err);

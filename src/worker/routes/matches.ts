@@ -244,9 +244,18 @@ matchRoutes.post("/goals/:id/attribute", requireAdmin, async (c) => {
     z.object({ kind: z.enum(["normal", "own_goal"]), scorerPlayerId: zId, assistPlayerId: zId.nullable().optional(), reason: zReason }),
   );
   const db = c.env.DB;
-  const goal = await first<{ id: string; match_id: string; set_id: string; kind: string }>(db, "SELECT id, match_id, set_id, kind FROM goal_events WHERE id = ?", c.req.param("id"));
+  const goal = await first<{ id: string; match_id: string; set_id: string; kind: string; scorer_player_id: string | null; assist_player_id: string | null }>(
+    db,
+    "SELECT id, match_id, set_id, kind, scorer_player_id, assist_player_id FROM goal_events WHERE id = ?",
+    c.req.param("id"),
+  );
   if (!goal) throw new HttpError(404, "Goal not found.");
-  if (goal.kind !== "unattributed") throw new HttpError(409, "This goal already has a scorer. Remove it and add it again to change it.");
+  if (goal.kind !== "unattributed") {
+    // A replay of the same request (e.g. sent again from the offline queue) succeeds without changes.
+    const assist = input.kind === "normal" ? input.assistPlayerId ?? null : null;
+    if (goal.kind === input.kind && goal.scorer_player_id === input.scorerPlayerId && goal.assist_player_id === assist) return detail(c, (await dayForMatch(db, goal.match_id)).match_day_id);
+    throw new HttpError(409, "This goal already has a scorer. Remove it and add it again to change it.");
+  }
   const match = await dayForMatch(db, goal.match_id);
   const { loaded, isCorrection } = await editableDay(c, match.match_day_id, input.reason);
   const state = toDayState(loaded);

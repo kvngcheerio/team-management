@@ -876,13 +876,13 @@ matchDayRoutes.post("/matchdays/:id/attendance", requireAdmin, async (c) => {
 // ---------------------------------------------------------------------------
 
 async function confirmedPool(db: D1Database, dayId: string): Promise<PoolPlayer[]> {
-  const rows = await all<{ id: string; display_name: string; skill_rating: number; gk_preference: PoolPlayer["gk"] }>(
+  const rows = await all<{ id: string; display_name: string; skill_rating: number; gk_preference: PoolPlayer["gk"]; kind: string }>(
     db,
-    `SELECT p.id, p.display_name, p.skill_rating, p.gk_preference FROM registrations r JOIN players p ON p.id = r.player_id
+    `SELECT p.id, p.display_name, p.skill_rating, p.gk_preference, p.kind FROM registrations r JOIN players p ON p.id = r.player_id
       WHERE r.match_day_id = ? AND r.status = 'confirmed' AND p.active = 1 AND p.approved = 1 ORDER BY r.queued_at`,
     dayId,
   );
-  return rows.map((r) => ({ playerId: r.id, displayName: r.display_name, rating: r.skill_rating, gk: r.gk_preference }));
+  return rows.map((r) => ({ playerId: r.id, displayName: r.display_name, rating: r.skill_rating, gk: r.gk_preference, guest: r.kind === "guest" }));
 }
 
 matchDayRoutes.post("/matchdays/:id/teams/generate", requireAdmin, async (c) => {

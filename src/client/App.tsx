@@ -25,13 +25,18 @@ import PlayersPage from "./pages/Players";
 import RulesPage from "./pages/Rules";
 import SetupPage from "./pages/Setup";
 import SignInPage from "./pages/SignIn";
+import InstallPage from "./pages/Install";
+import { OfflineBanner } from "./components/offline";
+import { clearQueryCache } from "./offline-cache";
+import { clearOutbox } from "./outbox";
 import StandingsPage from "./pages/Standings";
 import TeamSelectionPage from "./pages/TeamSelection";
 
 function RequireUser({ admin = false }: { admin?: boolean }) {
-  const { data, isLoading, error } = useMe();
+  const { data, isLoading, isFetching, error } = useMe();
   const location = useLocation();
-  if (isLoading) return <Loading />;
+  // A saved copy saying "signed out" may be stale (offline-cache.ts): wait for the live answer.
+  if (isLoading || (!data?.user && isFetching)) return <Loading />;
   if (error) return <div className="p-6 text-red-700">Could not reach the server. Pull to refresh.</div>;
   if (data?.needsSetup) return <Navigate to="/setup" replace />;
   if (!data?.user) return <Navigate to={`/signin?next=${encodeURIComponent(location.pathname)}`} replace />;
@@ -65,6 +70,8 @@ function Layout() {
   const signOut = async () => {
     await api.post("/auth/sign-out", {}).catch(() => {});
     qc.clear();
+    clearOutbox();
+    clearQueryCache();
     navigate("/signin");
   };
   return (
@@ -108,6 +115,7 @@ function Layout() {
           </div>
         </header>
         <div className="space-y-2 px-4 sm:px-8">
+          <OfflineBanner />
           {(data?.player?.renewal === "due_soon" || data?.player?.renewal === "overdue") && (
             <NavLink to="/me" className="flex items-center justify-between gap-3 rounded-2xl bg-sand-soft px-4 py-3 text-sm text-[#6b4a12]">
               <span>Membership renewal {data.player.renewal === "overdue" ? "is due" : "is due soon"}.</span>
@@ -189,6 +197,7 @@ export const router = createBrowserRouter([
           { path: "/me", element: <MePage /> },
           { path: "/pay/:id", element: <PayPage /> },
           { path: "/announcements", element: <AnnouncementsPage /> },
+          { path: "/install", element: <InstallPage /> },
           {
             element: <RequireUser admin />,
             children: [

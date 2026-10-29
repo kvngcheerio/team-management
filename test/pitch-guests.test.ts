@@ -52,6 +52,18 @@ describe("adding guests on the pitch", () => {
     expect(res.body.sets.find((s: any) => s.idx === 1).players).toHaveLength(5);
   });
 
+  it("shows a guest's contact details to admins only", async () => {
+    const reg = (b: any) => b.registrations.find((r: any) => r.displayName === "Walk-in Wale");
+    expect(reg((await admin.get(`/matchdays/${dayId}`)).body).contactPhone).toBe("+234 803 333 3333");
+    const guestId = reg((await admin.get(`/matchdays/${dayId}`)).body).playerId;
+    for (const path of [`/matchdays/${dayId}`, "/dashboard", "/players", `/players/${guestId}`]) {
+      const res = await member.get(path);
+      expect(res.status, path).toBe(200);
+      expect(JSON.stringify(res.body), path).not.toContain("803 333 3333");
+      expect(JSON.stringify(res.body), path).not.toMatch(/"contact(Email|Phone)"/);
+    }
+  });
+
   it("reuses a previous guest record instead of duplicating it", async () => {
     const prev = await createPlayer(admin, "Returning Ruth", { kind: "guest" });
     const res = await admin.post(`/matchdays/${dayId}/pitch-guests`, { existingPlayerId: prev.playerId });
@@ -91,5 +103,20 @@ describe("adding guests on the pitch", () => {
     expect(pts).toBe(3 * teammates.length);
     // No more pitch additions once finalized.
     expect((await admin.post(`/matchdays/${dayId}/pitch-guests`, { name: "Too Late" })).status).toBe(409);
+  });
+
+  it("keeps guest stats off members' shared boards but on the guest's profile", async () => {
+    const seasonId = (await admin.get(`/matchdays/${dayId}`)).body.day.seasonId;
+    const wale = (await admin.get(`/players`)).body.players.find((p: any) => p.displayName === "Walk-in Wale").id;
+    const memberStats = (await member.get(`/seasons/${seasonId}/stats`)).body;
+    expect(memberStats.players.some((r: any) => r.playerId === wale)).toBe(false);
+    expect(memberStats.totals.goals).toBe(1); // the guest's goal still counts in the season total
+    const memberBoards = (await member.get(`/seasons/${seasonId}/standings`)).body;
+    expect(memberBoards.goals.some((r: any) => r.playerId === wale)).toBe(false);
+    expect((await member.get(`/dashboard`)).body.leaders.topScorers.some((r: any) => r.playerId === wale)).toBe(false);
+    // Admins still see them; anyone can open the guest's own profile.
+    expect((await admin.get(`/seasons/${seasonId}/stats`)).body.players.some((r: any) => r.playerId === wale)).toBe(true);
+    expect((await admin.get(`/seasons/${seasonId}/standings`)).body.goals.find((r: any) => r.playerId === wale).goals).toBe(1);
+    expect((await member.get(`/players/${wale}`)).body.seasons[0].goals).toBe(1);
   });
 });
